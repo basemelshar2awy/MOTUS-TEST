@@ -1,0 +1,11 @@
+# Security model
+- Passwords: scrypt with per-user salt; policy ≥12 chars, rejects common/username-containing passwords; first-login forced change for created/reset users; 5 failed attempts lock the account; repeated failures from one IP are blocked.
+- Sessions: random token, only its SHA-256 stored in the DB; cookie `motus_sid` HttpOnly, SameSite=Lax, Secure when `PUBLIC_ORIGIN` is https; idle and absolute expiry; ended on password change / suspension.
+- CSRF: state-changing requests need `X-Requested-With` and a matching `Origin` (PUBLIC_ORIGIN, MOTUS_EXTRA_ORIGINS or forwarded host).
+- Authorization: roles per action in the registry, enforced server-side; the UI only hides what the server refuses.
+- Isolation: company from session; RLS on all business tables; tests attack it through API and raw SQL.
+- Secrets: only in `config\motus.env` (ACL: SYSTEM, Administrators, LOCAL SERVICE read). Provider credentials and webhook secrets AES-256-GCM encrypted with `MOTUS_CREDENTIALS_KEY`. API keys stored as hashes, shown once. No secret in source, ZIPs, or client bundle.
+- Headers: CSP, HSTS (when https), X-Content-Type-Options, frame denial, no-store on API.
+- Network: Node listens on 127.0.0.1 only (refuses to start otherwise); outbound webhooks block private addresses unless explicitly allowed; inbound webhooks need HMAC with a 5-minute window.
+- Audit: append-only `audit_log` (who, what, before/after, source).
+- Not provided: antivirus scanning of uploads, MFA, per-field encryption of business data, WAF. Keep Windows and PostgreSQL patched.

@@ -1,0 +1,1 @@
+MOTUS IIS check file. If you can read this at https://motus.sabeelbus.com/motus-iis-check.txt, IIS site "motus" points at C:\Website\Motus\iis correctly.
