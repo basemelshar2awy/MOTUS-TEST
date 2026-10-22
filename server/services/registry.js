@@ -9,7 +9,8 @@ const core = require('../lib/core');
 const activities = require('../lib/activities');
 const { forbidden, AppError, fromPg } = require('../lib/errors');
 
-const ROLES = ['super_admin', 'company_admin', 'fleet_manager', 'operations', 'accountant', 'maintenance', 'viewer'];
+const ROLES = ['super_admin', 'company_admin', 'fleet_manager', 'operations', 'accountant', 'maintenance', 'viewer', 'driver'];
+/* 'driver' runs only the actions that name it (own trips: services/ops.js me.*) */
 /* role groups (super_admin is always allowed inside the company it is working in) */
 const G = {
   admin: ['company_admin'],

@@ -190,7 +190,7 @@
 
   /* ---------- account: sign in, change password, sign out, switch company ---------- */
   U.switchCompany = async id => {
-    try { await A.post('/api/session/company', { companyId: id }); await A.loadSession(); U.applySession(); await A.loadSnapshot(); U.toast(tt('تم التبديل إلى ', 'Switched to ') + M.L(U.company().name)); location.hash = 'dashboard'; U.full(); }
+    try { await A.post('/api/session/company', { companyId: id }); await A.loadSession(); U.applySession(); await A.loadSnapshot(); U.toast(tt('تم التبديل إلى ', 'Switched to ') + M.L(U.company().name)); location.hash = M.state.role === 'driver' ? 'mytrips' : 'dashboard'; U.full(); }
     catch (e) { U.showError(e); }
   };
   U.applySession = () => {
@@ -200,7 +200,7 @@
   };
   U.act('user-menu', () => {
     const u = M.state.user || {};
-    U.sheet(M.esc(M.L(u.name) || u.email), U.dl([[tt('البريد الإلكتروني', 'Email'), `<span class="ltr">${M.esc(u.email)}</span>`], [tt('الدور', 'Role'), U.roles[u.role] ? tt(...U.roles[u.role]) : u.role], [tt('الشركة', 'Company'), M.esc(M.L(U.company().name))]]) +
+    U.sheet(M.esc(M.L(u.name) || u.email), U.dl([[tt('الدخول بـ', 'Signs in with'), `<span class="ltr">${M.esc([u.email, u.phone].filter(Boolean).join(' · '))}</span>`], [tt('الدور', 'Role'), U.roles[u.role] ? tt(...U.roles[u.role]) : u.role], [tt('الشركة', 'Company'), M.esc(M.L(U.company().name))], M.companies.length > 1 && u.member ? [tt('شركاتك على سبيل', 'Your companies on Sabeel'), M.companies.map(c => `${M.esc(M.L(c.name))} <span class="muted small">(${U.roles[c.role] ? tt(...U.roles[c.role]) : c.role})</span>`).join('<br>')] : null]) +
       `<div class="actions" style="margin-top:16px;flex-wrap:wrap">${u.role === 'super_admin' ? `<a class="btn secondary" href="#platform" data-act="close-overlay">${U.icon('building')}${tt('إدارة الشركات', 'Manage companies')}</a>` : ''}<button class="btn secondary" data-act="change-password">${U.icon('key')}${tt('تغيير كلمة المرور', 'Change password')}</button><button class="btn danger" data-act="logout">${tt('تسجيل الخروج', 'Sign out')}</button></div>`, tt('حسابي', 'My account'));
   });
   U.act('logout', async () => { try { await A.post('/api/logout'); } catch (e) { } location.hash = ''; location.reload(); });
@@ -214,7 +214,7 @@
   U.loginScreen = (msg) => {
     U.full = () => U.loginScreen();
     authShell(`<h1>${tt('تسجيل الدخول', 'Sign in')}</h1>${msg ? `<div class="form-error" role="alert">${U.icon('alert')}<div>${M.esc(msg)}</div></div>` : ''}<form id="login-form" class="form one" novalidate>
-      <div class="field full"><label for="lg-email">${tt('البريد الإلكتروني', 'Email')}</label><input id="lg-email" type="email" autocomplete="username" required dir="ltr"></div>
+      <div class="field full"><label for="lg-email">${tt('البريد الإلكتروني أو رقم الموبايل', 'Email or mobile number')}</label><input id="lg-email" name="email" type="text" inputmode="email" autocomplete="username" required dir="ltr"></div>
       <div class="field full"><label for="lg-pass">${tt('كلمة المرور', 'Password')}</label><input id="lg-pass" type="password" autocomplete="current-password" required dir="ltr"></div>
       <div class="field full"><button class="btn block" type="submit" id="lg-btn">${tt('دخول', 'Sign in')}</button></div></form>
       <p class="muted small">${tt('نسيت كلمة المرور؟ اطلب من مدير النظام في شركتك إعادة تعيينها.', 'Forgot your password? Ask your company admin to reset it.')}</p>`);
@@ -223,7 +223,7 @@
     f.addEventListener('submit', async e => {
       e.preventDefault();
       const btn = document.getElementById('lg-btn'); btn.disabled = true;
-      try { await A.post('/api/login', { email: document.getElementById('lg-email').value, password: document.getElementById('lg-pass').value }); location.reload(); }
+      try { await A.post('/api/login', { login: document.getElementById('lg-email').value, password: document.getElementById('lg-pass').value }); location.reload(); }
       catch (err) { btn.disabled = false; U.loginScreen(err.msg ? tt(err.msg.ar, err.msg.en) : String(err.message)); }
     });
   };

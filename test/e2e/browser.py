@@ -24,12 +24,12 @@ with sync_playwright() as p:
     page.wait_for_selector('#login-form')
     if shots:
         page.screenshot(path=f'{shots}/00-login.png')
-    page.fill('#login-form input[type=email], #login-form input[name=email]', email)
+    page.fill('#lg-email', email)
     page.fill('#login-form input[type=password]', 'wrong-password')
     page.click('#login-form button[type=submit]')
     page.wait_for_selector('.form-error')
     login_err = [e for e in errors]  # the 401 on a wrong password is expected and filtered above
-    page.wait_for_timeout(500); page.fill('#login-form input[type=email]', email); page.fill('#login-form input[type=password]', pw)
+    page.wait_for_timeout(500); page.fill('#lg-email', email); page.fill('#login-form input[type=password]', pw)
     page.click('#login-form button[type=submit]')
     page.wait_for_selector('[data-nav]', timeout=15000)
     results = []

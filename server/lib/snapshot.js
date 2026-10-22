@@ -141,7 +141,13 @@ async function load(companyId) {
     D.availability = (await q('SELECT * FROM availability WHERE to_date >= $1 ORDER BY from_date', [core.addDays(today, -60)])).map(r => Object.assign(base(r), { driverId: r.driver_id, from: r.from_date, to: r.to_date, kind: r.kind, note: r.note }));
 
     D.coa = (await q('SELECT * FROM coa ORDER BY code')).map(r => ({ id: r.id, key: r.key, name: L(r, 'name'), code: r.code, erpCode: r.erp_code }));
-    D.users = (await q('SELECT id, company_id, email, name_ar, name_en, title_ar, title_en, role, branch_id, status, last_login_at, must_change_password, created_at FROM users WHERE company_id = $1 ORDER BY created_at', [companyId])).map(r => ({ id: r.id, companyId: r.company_id, email: r.email, name: L(r, 'name'), title: L(r, 'title'), role: r.role, branchId: r.branch_id, status: r.status === 'active' && r.must_change_password && !r.last_login_at ? 'invited' : r.status, lastLogin: r.last_login_at ? core.fmtTs(r.last_login_at).slice(0, 10) : null }));
+    // people with access to this company (one account each, with the role they have here)
+    const members = await q(`SELECT m.id mid, m.user_id, m.role, m.branch_id, m.driver_id, m.status, m.title_ar, m.title_en, m.created_at, u.email, u.phone, u.name_ar, u.name_en, u.last_login_at, u.must_change_password
+        FROM memberships m JOIN users u ON u.id = m.user_id ORDER BY m.created_at`);
+    D.users = members.filter(r => r.role !== 'driver').map(r => ({ id: r.user_id, companyId, email: r.email || r.phone, name: L(r, 'name'), title: L(r, 'title'), role: r.role, branchId: r.branch_id,
+      status: r.status === 'active' && r.must_change_password && !r.last_login_at ? 'invited' : r.status === 'invited' ? 'awaiting' : r.status, lastLogin: r.last_login_at ? core.fmtTs(r.last_login_at).slice(0, 10) : null }));
+    // driver accounts (Sabeel driver app): which drivers can sign in, and whether they accepted
+    D.driverAccounts = members.filter(r => r.role === 'driver').map(r => ({ driverId: r.driver_id, userId: r.user_id, login: r.phone || r.email, status: r.status, lastLogin: r.last_login_at ? core.fmtTs(r.last_login_at).slice(0, 10) : null }));
     D.apiKeys = (await q('SELECT id, company_id, name_ar, name_en, prefix, scopes, last_used, status, created_at, created_by FROM api_keys ORDER BY created_at DESC')).map(r => Object.assign(base(r), { name: L(r, 'name'), prefix: r.prefix, scopes: r.scopes, lastUsed: r.last_used ? core.fmtTs(r.last_used) : null, status: r.status }));
     D.webhooks = (await q('SELECT id, company_id, url, events, status, created_at, created_by FROM webhooks ORDER BY created_at')).map(r => Object.assign(base(r), { url: r.url, events: r.events, status: r.status, secret: 'whsec_••••' }));
     D.webhookDeliveries = (await q('SELECT id, company_id, webhook_id, event, status, code, attempts, last_error, created_at, delivered_at, next_attempt_at FROM webhook_deliveries ORDER BY created_at DESC LIMIT 200')).map(r => ({ id: r.id, webhookId: r.webhook_id, event: r.event, at: core.fmtTs(r.delivered_at || r.created_at), status: r.status, code: r.code, attempts: r.attempts, error: r.last_error, nextAttempt: r.status === 'retrying' ? core.fmtTs(r.next_attempt_at) : null }));
@@ -179,9 +185,25 @@ async function load(companyId) {
 
 /* role filtering: what each role may see. Secrets are never in the snapshot at all. */
 const ADMIN = ['super_admin', 'company_admin'];
-function forRole(snap, role, userId) {
+/* a driver sees only their own record, their own trips (and those trips' vehicles) and the places */
+const DRIVER_KEEP = ['geofences', 'vehicleTypes', 'branches'];
+function forDriver(snap, driverId) {
+  const src = snap.data, D = {};
+  const trips = src.trips.filter(t => t.driverId === driverId);
+  const me = src.drivers.find(d => d.id === driverId);
+  const vids = new Set(trips.map(t => t.vehicleId).concat(me && me.vehicleId ? [me.vehicleId] : []));
+  for (const [k, v] of Object.entries(src)) D[k] = Array.isArray(v) ? (DRIVER_KEEP.includes(k) ? v : []) : v;
+  D.trips = trips.map(t => Object.assign({}, t, { revenue: 0, clientId: null }));
+  D.drivers = me ? [me] : [];
+  D.vehicles = src.vehicles.filter(v => vids.has(v.id)).map(v => ({ id: v.id, code: v.code, plate: v.plate, type: v.type, make: v.make, model: v.model, seats: v.seats, status: v.status, odometer: v.odometer }));
+  D.calendar = { vehicles: [], drivers: src.calendar.drivers.filter(x => x.driverId === driverId) };
+  D.stock = {}; D.settings = { vatRate: src.settings.vatRate, currency: src.settings.currency };
+  return { version: snap.version, today: snap.today, company: snap.company, activities: snap.activities, activityCatalog: activities.CATALOG, data: D, driver: true };
+}
+function forRole(snap, role, userId, driverId) {
+  if (role === 'driver') return forDriver(snap, driverId);
   const D = Object.assign({}, snap.data);
-  if (!ADMIN.includes(role)) { D.users = D.users.map(u => ({ id: u.id, name: u.name, title: u.title, role: u.role, status: u.status })); D.apiKeys = []; D.webhooks = []; D.webhookDeliveries = []; }
+  if (!ADMIN.includes(role)) { D.users = D.users.map(u => ({ id: u.id, name: u.name, title: u.title, role: u.role, status: u.status })); D.driverAccounts = D.driverAccounts.map(a => ({ driverId: a.driverId, status: a.status })); D.apiKeys = []; D.webhooks = []; D.webhookDeliveries = []; }
   if (!ADMIN.includes(role) && role !== 'accountant') { D.audit = []; D.syncLog = []; }
   if (!['super_admin', 'company_admin', 'fleet_manager', 'operations'].includes(role)) {
     D.drivers = D.drivers.map(d => Object.assign({}, d, { nationalId: d.nationalId ? d.nationalId.slice(0, 2) + '••••••••' + d.nationalId.slice(-2) : '' }));

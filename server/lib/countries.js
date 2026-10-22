@@ -90,4 +90,21 @@ function checkLicense(code, value, inputField = 'licenseClass') {
   return value;
 }
 
-module.exports = { PACKS, CODES, pack, publicPack, check, checkLicense };
+/* mobile numbers are kept in international form (+20…, +966…) so one person has one login
+   whichever company typed the number. Local forms are read by their shape (Egypt 01xxxxxxxxx,
+   Saudi 05xxxxxxxx) or, when ambiguous, by the company's country. Returns null when it is not a
+   mobile number. */
+const DIAL = { EG: '20', SA: '966' };
+function normalizePhone(value, country) {
+  let v = String(value == null ? '' : value).replace(/[\s\-().]/g, '').replace(/[\u0660-\u0669]/g, d => String(d.charCodeAt(0) - 0x0660));
+  if (!v) return null;
+  if (v.startsWith('00')) v = '+' + v.slice(2);
+  if (/^\+[1-9]\d{7,14}$/.test(v)) return v.replace(/^\+(20|966)0/, '+$1');
+  if (/^01[0-25]\d{8}$/.test(v)) return '+20' + v.slice(1);
+  if (/^05\d{8}$/.test(v)) return '+966' + v.slice(1);
+  if (/^0\d{8,10}$/.test(v) && DIAL[country]) return '+' + DIAL[country] + v.slice(1);
+  if (/^(20|966)\d{8,11}$/.test(v)) return '+' + v;
+  return null;
+}
+
+module.exports = { PACKS, CODES, pack, publicPack, check, checkLicense, normalizePhone };

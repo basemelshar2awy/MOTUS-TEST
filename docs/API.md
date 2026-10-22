@@ -15,6 +15,13 @@ Base: `https://motus.sabeelbus.com/api/v1/` — `Authorization: Bearer mk_live_�
 - Inbound webhooks: `POST /api/webhooks/providers/{id}` with header `X-Motus-Signature: t=<unix>,v1=<hex hmac-sha256(secret, t.body)>` (5-minute tolerance).
 
 
+## Browser session (one account, several companies)
+- `POST /api/login` — `{ "login": "<email or mobile>", "password" }` (`email` still accepted). Answers `companies` / `invites` counts; signs in to the company used last.
+- `GET /api/session` — `user` (role in the current company, `driverId` for drivers), `company`, `companies` (each with the role there), `invites`.
+- `POST /api/session/company` — `{ companyId }` switch to another company the account is an active member of.
+- `POST /api/session/invites/{companyId}/accept|decline` — answer a company's invitation.
+- Drivers: `/api/snapshot` returns only their own record and trips (`driver: true`); actions `me.trips`, `me.tripStart` `{ id, odometer }`, `me.tripComplete` `{ id, endKm, expenses: { tolls, parking } }`. Every other route answers 403.
+- Company actions: `user.create` (an existing account is invited: `invited: true`, no password), `user.remove`, `driver.account` `{ driverId, phone?, email? }`, `driver.unlink` `{ driverId }`. `user.resetPassword` / changing the name of an account other companies use answer `409 shared_account`.
 ## Platform (super admin, browser session)
 - `GET /api/platform/companies[?country=EG|SA]` — each company with its enabled `activities`, `country` and `countryLocked`; also `countries` (the public country packs).
 - `POST /api/platform/companies` — `activities: ["tourism" | "education" | "intercity" | "staff" | "cargo", …]` (one or more; left out = `["tourism"]`); `country: "EG" | "SA"` (left out = `EG`) sets currency, VAT, time zone, starting places; `taxNo` must match the country's format.

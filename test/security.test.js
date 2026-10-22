@@ -141,5 +141,5 @@ test('a company admin cannot read or change another company\'s users', async () 
   for (const [act, body] of [['user.update', { id: aUser, role: 'viewer' }], ['user.resetPassword', { id: aUser }]]) {
     const r = await b.do(act, body); assert.ok([403, 404].includes(r.status), act + ' -> ' + r.status + JSON.stringify(r.data));
   }
-  assert.equal((await env.sql("SELECT role FROM users WHERE email = 'admin@aaa.test'")).rows[0].role, 'company_admin');
+  assert.equal((await env.sql("SELECT m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE u.email = 'admin@aaa.test'")).rows[0].role, 'company_admin');
 });

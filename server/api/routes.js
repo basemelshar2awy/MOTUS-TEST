@@ -35,8 +35,13 @@ async function requireUser(req, { allowMustChange = false } = {}) {
   if (u.mustChange && !allowMustChange) throw new AppError(403, 'password_change_required', 'لازم تغيّر كلمة المرور أولاً', 'You must change your password first');
   return u;
 }
-const requireCompany = u => { if (!u.companyId) throw new AppError(400, 'no_company', 'اختر شركة أولاً', 'Select a company first'); return u.companyId; };
-const ctxOf = (u, req) => ({ companyId: u.companyId, user: { id: u.id, name: u.name, role: u.role }, source: 'ui', ip: req._ip });
+/* drivers reach only their own trips (snapshot + driver actions); every other company route is staff only */
+const requireCompany = (u, { driver = false } = {}) => {
+  if (!u.companyId) throw new AppError(400, 'no_company', 'اختر شركة أولاً', 'Select a company first');
+  if (u.role === 'driver' && !driver) throw forbidden();
+  return u.companyId;
+};
+const ctxOf = (u, req) => ({ companyId: u.companyId, user: { id: u.id, name: u.name, role: u.role, driverId: u.driverId || null }, source: 'ui', ip: req._ip });
 const ADMIN_ROLES = ['super_admin', 'company_admin'];
 
 function checkOrigin(req) {
@@ -53,15 +58,19 @@ function checkOrigin(req) {
 /* ---------- session ---------- */
 async function sessionPayload(u) {
   if (!u) return { user: null };
-  const out = { user: { id: u.id, email: u.email, name: { ar: u.nameAr || u.name, en: u.name }, role: u.role, lang: u.lang, mustChangePassword: u.mustChange }, company: null, companies: [] };
+  const out = { user: { id: u.id, email: u.email, phone: u.phone, login: u.login, name: { ar: u.nameAr || u.name, en: u.name }, role: u.role, member: u.member, driverId: u.driverId, lang: u.lang, mustChangePassword: u.mustChange }, company: null, companies: [], invites: [] };
   await db.platform(async c => {
     if (u.role === 'super_admin') {
-      out.companies = (await c.query("SELECT id, code, name_ar, name_en FROM companies WHERE status = 'active' ORDER BY code")).rows.map(r => ({ id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar } }));
-      out.company = out.companies.find(x => x.id === u.companyId) || null;
-    } else if (u.companyId) {
-      const r = (await c.query('SELECT id, code, name_ar, name_en, currency, country FROM companies WHERE id = $1', [u.companyId])).rows[0];
-      if (r) { out.company = { id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar }, currency: r.currency, country: r.country }; out.companies = [out.company]; }
+      out.companies = (await c.query("SELECT id, code, name_ar, name_en, country FROM companies WHERE status = 'active' ORDER BY code")).rows.map(r => ({ id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar }, country: r.country }));
+    } else {
+      // one account, several companies: each with the role it has there
+      const ms = (await c.query("SELECT * FROM user_memberships($1) WHERE company_status = 'active'", [u.id])).rows;
+      const co = m => ({ id: m.company_id, code: m.code, name: { ar: m.name_ar, en: m.name_en || m.name_ar }, country: m.country, role: m.role });
+      out.companies = ms.filter(m => m.status === 'active').map(co);
+      out.invites = ms.filter(m => m.status === 'invited').map(co);
     }
+    out.company = out.companies.find(x => x.id === u.companyId) || null;
+    if (out.company) { const r = (await c.query('SELECT currency FROM companies WHERE id = $1', [out.company.id])).rows[0]; out.company.currency = r.currency; }
   });
   out.activityCatalog = activities.CATALOG;
   out.countries = countries.CODES.map(c => countries.publicPack(c));
@@ -77,20 +86,25 @@ router.add('POST', '/api/password', async (req, res) => {
   send(res, 200, { ok: true });
 });
 router.add('POST', '/api/session/company', async (req, res) => { const u = await requireUser(req); const b = await json(req, 4096); await session.switchCompany(u, b.companyId); send(res, 200, { ok: true }); });
+router.add('POST', '/api/session/invites/:companyId/:answer', async (req, res, p) => {
+  const u = await requireUser(req);
+  if (!['accept', 'decline'].includes(p.answer)) throw notFound('route');
+  send(res, 200, await session.answerInvite(u, p.companyId, p.answer === 'accept'));
+});
 router.add('POST', '/api/session/lang', async (req, res) => { const u = await requireUser(req); await session.setLang(u, (await json(req, 1024)).lang); send(res, 200, { ok: true }); });
 
 /* ---------- data ---------- */
 router.add('GET', '/api/snapshot', async (req, res) => {
-  const u = await requireUser(req); const cid = requireCompany(u);
+  const u = await requireUser(req); const cid = requireCompany(u, { driver: true });
   const snap = await snapshot.get(cid);
-  send(res, 200, snapshot.forRole(snap, u.role, u.id));
+  send(res, 200, snapshot.forRole(snap, u.role, u.id, u.driverId));
 });
 router.add('GET', '/api/version', async (req, res) => {
-  const u = await requireUser(req); const cid = requireCompany(u);
+  const u = await requireUser(req); const cid = requireCompany(u, { driver: true });
   send(res, 200, { version: await snapshot.version(cid) });
 });
 router.add('POST', '/api/do/:action', async (req, res, p) => {
-  const u = await requireUser(req); requireCompany(u);
+  const u = await requireUser(req); requireCompany(u, { driver: true });   // the action registry checks the role
   const body = await json(req, 16 * 1024 * 1024 > CFG.maxUploadBytes * 2 ? CFG.maxUploadBytes * 2 : 16 * 1024 * 1024);
   const out = await registry.run(ctxOf(u, req), p.action, body);
   send(res, 200, out === undefined ? { ok: true } : out);
