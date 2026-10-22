@@ -114,6 +114,8 @@ async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loa
   if (loadKg && Number(v.payload_kg) < loadKg) reasons.push({ ar: `الحمولة ${Number(v.payload_kg)} كجم أقل من ${loadKg} كجم`, en: `Payload ${Number(v.payload_kg)} kg is below ${loadKg} kg` });
   if (v.license_expiry && v.license_expiry < date) reasons.push({ ar: 'رخصة المركبة منتهية', en: 'Vehicle license expired' });
   if (v.insurance_expiry && v.insurance_expiry < date) reasons.push({ ar: 'تأمين المركبة منتهي', en: 'Vehicle insurance expired' });
+  const ex = await require('./contracts').exclusiveClash(c, 'vehicle_id', v.id, date, start, end);
+  if (ex) reasons.push({ ar: `المركبة متعاقدة حصرياً (عقد ${ex.number}) من ${ex.work_start} لـ ${ex.work_end}`, en: `The vehicle is on exclusive contract ${ex.number} (${ex.work_start}–${ex.work_end})` });
   const hit = (await calendarClashes(c, 'vehicle_commitments', 'vehicle_id', v.id, date, start, end, ignoreTripIds))[0];
   if (hit) reasons.push(hit.number
     ? { ar: `متعارضة مع الرحلة ${hit.number} (${hit.date === date ? '' : hit.date + ' '}${hit.start_time}–${hit.end_time})`, en: `Overlaps trip ${hit.number} (${hit.date === date ? '' : hit.date + ' '}${hit.start_time}–${hit.end_time})` }
@@ -125,6 +127,8 @@ async function checkDriver(c, d, date, start, end, ignoreTripIds = [], maxHours)
   if (d.status !== 'active') reasons.push({ ar: 'السائق غير نشط', en: 'Driver is inactive' });
   if (d.license_expiry < date) reasons.push({ ar: 'رخصة السائق منتهية', en: "Driver's license expired" });
   const hits = await calendarClashes(c, 'driver_commitments', 'driver_id', d.id, date, start, end, ignoreTripIds);
+  const exd = await require('./contracts').exclusiveClash(c, 'driver_id', d.id, date, start, end);
+  if (exd) reasons.push({ ar: `السائق مع مركبته على عقد حصري (${exd.number}) في الوقت ده`, en: `The driver works on exclusive contract ${exd.number} at that time` });
   // the same person may also drive for another company on Sabeel: only "busy" is known, not where
   const w = await windowOf(c, date, start, end);
   if ((await c.query(`SELECT driver_busy_elsewhere(app_company_id(), $1, $2::timestamptz - make_interval(mins => ${GAP_MIN}), $3::timestamptz + make_interval(mins => ${GAP_MIN})) b`, [d.id, w.s, w.e])).rows[0].b) {

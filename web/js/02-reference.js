@@ -7,7 +7,10 @@
     city: { ar: 'جولة داخلية', en: 'City tour' },
     intercity: { ar: 'بين المدن', en: 'Intercity' },
     hire: { ar: 'تأجير خاص', en: 'Private hire' },
+    contract: { ar: 'عقد تشغيل', en: 'Operating contract' },
   };
+  // where a trip came from (MOTUS itself, a Sabeel module, an outside system)
+  M.tripSources = { motus: { ar: 'موتس', en: 'MOTUS' }, sabeel: { ar: 'موديول سبيل', en: 'Sabeel module' }, external: { ar: 'نظام خارجي', en: 'Outside system' } };
   M.itemCats = { oils: ['زيوت', 'Oils'], filters: ['فلاتر', 'Filters'], brakes: ['فرامل', 'Brakes'], electrical: ['كهرباء', 'Electrical'], ac: ['تكييف', 'AC'], suspension: ['عفشة', 'Suspension'], tires: ['كاوتش', 'Tires'], batteries: ['بطاريات', 'Batteries'], other: ['أخرى', 'Other'] };
   M.placeKinds = { city: ['مدينة/فنادق', 'City / hotels'], airport: ['مطار', 'Airport'], site: ['موقع سياحي', 'Tourist site'], hotel: ['فندق', 'Hotel'], garage: ['جراج', 'Garage'], client: ['موقع عميل', 'Client site'], restricted: ['منطقة محظورة', 'Restricted zone'] };
   M.expenseCats = { fuel: ['وقود', 'Fuel'], oil: ['زيوت', 'Oil'], maintenance: ['صيانة', 'Maintenance'], tolls: ['كارتة', 'Tolls'], parking: ['جراج وانتظار', 'Parking'], lodging: ['إقامة', 'Lodging'], salaries: ['رواتب', 'Salaries'], insurance: ['تأمين', 'Insurance'], license: ['رخص', 'Licenses'], subcontract: ['باطن', 'Subcontract'], other: ['أخرى', 'Other'] };

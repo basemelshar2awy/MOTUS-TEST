@@ -1,4 +1,13 @@
 # Changelog
+## Unreleased — operating contracts and trip sources
+- Operating contracts: the company rents vehicles out on terms priced in advance — with or without its driver, per trip or per period (week / 2 weeks / month, also the billing cycle), exclusive in set working hours and days or allowing extra work. The company (operator) keeps paying maintenance, fuel and oils.
+- Whoever runs the work — MOTUS, a Sabeel module or an outside system — confirms each finished trip (screen, or `POST /api/v1/contracts/{id}/trips`, safe to retry with its own reference). MOTUS prices it from the contract and moves the odometer by the reported distance.
+- Every trip says where it came from (MOTUS / Sabeel module / outside system) and, for contract work, which contract; trips list filter and trip page show it.
+- An exclusive contract keeps its vehicles (and drivers, when with driver) out of other bookings in its hours only; extra work outside them is allowed.
+- Billing: per-trip contracts bill confirmed trips × rate; per-period contracts bill vehicles × cycles, a vehicle that joined or left mid-cycle pays its share of days. Each period is billed once, on the new "Revenue – operating contracts" account (4106).
+- Screens: Operations → Operating contracts (list, contract page, new contract, confirm trip, bill, add/remove vehicle, end).
+- Migration `008_contracts.sql`.
+
 ## Unreleased — one Sabeel account per person
 - An account is the person (email and/or mobile number, password, language); a membership gives it a role in a company. One account can work for several companies with a different role in each, and switch between them from the top bar.
 - Adding someone whose email or mobile already has a Sabeel account sends an invitation; the person accepts or declines after signing in. A company cannot reset the password or change the name of an account other companies also use.

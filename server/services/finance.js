@@ -35,7 +35,7 @@ async function createInvoice(c, ctx, client, lines, opts) {
   const number = await core.nextNumber(c, ctx, 'INV', issue);
   const inv = await insert(c, 'invoices', { company_id: ctx.companyId, number, client_id: client.id, issue_date: issue, due_date: due, currency, rate, subtotal: sub, discount, tax, total, paid: 0, status: 'issued', source: opts.source, einv_provider: countries.pack((await core.company(c, ctx)).country).einvoice.code, created_by: ctx.user.name });
   let n = 0;
-  for (const l of lines) await insert(c, 'invoice_lines', { company_id: ctx.companyId, invoice_id: inv.id, line_no: ++n, description_ar: l.ar, description_en: l.en, trip_id: l.tripId || null, program_id: l.programId || null, booking_id: l.bookingId || null, qty: l.qty, unit: l.unit, discount: 0, tax_rate: taxRate, total: round2(l.qty * l.unit) });
+  for (const l of lines) await insert(c, 'invoice_lines', { company_id: ctx.companyId, invoice_id: inv.id, line_no: ++n, description_ar: l.ar, description_en: l.en, trip_id: l.tripId || null, program_id: l.programId || null, booking_id: l.bookingId || null, contract_id: l.contractId || null, period_from: l.periodFrom || null, period_to: l.periodTo || null, qty: l.qty, unit: l.unit, discount: 0, tax_rate: taxRate, total: round2(l.qty * l.unit) });
   // journal in company currency
   const scale = sub ? (sub - discount) / sub : 1;
   const byKey = {};
@@ -59,6 +59,7 @@ define('invoice.fromTrips', G.finance, async (ctx, i, c) => {
     if (t.client_id !== client.id) throw bad('client', `الرحلة ${t.number} لعميل آخر`, `Trip ${t.number} belongs to another client`);
     if (t.status !== 'completed') throw bad('status', `الرحلة ${t.number} غير مكتملة`, `Trip ${t.number} is not completed`);
     if (t.invoice_id) throw conflict('invoiced', `الرحلة ${t.number} مفوترة بالفعل`, `Trip ${t.number} is already invoiced`);
+    if (t.contract_id) throw bad('contract', `الرحلة ${t.number} تبع عقد تشغيل — فوتر العقد`, `Trip ${t.number} belongs to an operating contract — bill the contract`);
     if (t.program_id) throw bad('program', `الرحلة ${t.number} جزء من برنامج — فوتر البرنامج`, `Trip ${t.number} is part of a program — invoice the program`);
   }
   const pl = await placeNames(c);

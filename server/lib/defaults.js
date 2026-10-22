@@ -46,7 +46,7 @@ const ROUTES = [
 const COA = [
   ['revenue_airport', 'إيراد استقبال مطار', 'Revenue – airport transfers', '4101'], ['revenue_city', 'إيراد جولات داخلية', 'Revenue – city tours', '4102'],
   ['revenue_intercity', 'إيراد رحلات بين المدن', 'Revenue – intercity', '4103'], ['revenue_hire', 'إيراد تأجير خاص', 'Revenue – private hire', '4104'],
-  ['revenue_program', 'إيراد برامج سياحية', 'Revenue – tour programs', '4105'], ['revenue_other', 'إيرادات أخرى', 'Other revenue', '4109'],
+  ['revenue_program', 'إيراد برامج سياحية', 'Revenue – tour programs', '4105'], ['revenue_contract', 'إيراد عقود تشغيل', 'Revenue – operating contracts', '4106'], ['revenue_other', 'إيرادات أخرى', 'Other revenue', '4109'],
   ['vat_out', 'ضريبة القيمة المضافة – مخرجات', 'VAT output', '2301'], ['vat_in', 'ضريبة القيمة المضافة – مدخلات', 'VAT input', '1501'],
   ['receivables', 'العملاء', 'Accounts receivable', '1201'], ['payables', 'الموردين', 'Accounts payable', '2101'],
   ['bank_main', 'البنك الرئيسي', 'Main bank account', '1102'], ['cash_main', 'الخزينة الرئيسية', 'Main cash', '1101'],
