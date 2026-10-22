@@ -102,7 +102,10 @@
     { g: ['الإعدادات', 'Settings'], items: [['company', 'building', 'بيانات الشركة', 'Company profile', ['super_admin', 'company_admin']], ['users', 'user', 'المستخدمين والصلاحيات', 'Users & roles', ['super_admin', 'company_admin']], ['vtypes', 'bus', 'أنواع المركبات', 'Vehicle types', ['super_admin', 'company_admin', 'fleet_manager']], ['coa', 'book', 'دليل الحسابات والربط', 'Accounts mapping', ['super_admin', 'company_admin', 'accountant']], ['erp', 'db', 'مزامنة ERP', 'ERP sync', ['super_admin', 'company_admin', 'accountant']], ['providers', 'plug', 'مزودي الخدمة', 'Service providers', ['super_admin', 'company_admin', 'fleet_manager', 'accountant']], ['reconcile', 'swap', 'مطابقة المعاملات', 'Transaction matching', ['super_admin', 'company_admin', 'fleet_manager', 'accountant']], ['api', 'key', 'التكاملات وAPI', 'Integrations & API', ['super_admin', 'company_admin']], ['audit', 'history', 'سجل العمليات', 'Audit log', ['super_admin', 'company_admin', 'accountant']], ['aisettings', 'sparkles', 'إعدادات الذكاء الاصطناعي', 'AI settings', ['super_admin', 'company_admin']]] },
   ];
   U.navItem = id => { for (const g of U.nav) for (const it of g.items) if (it[0] === id) return { g, it }; return null; };
-  U.can = id => { const n = U.navItem(id); return !n || n.it[4].includes(M.state.role); };
+  /* screens that belong to one activity (anything not listed is shared core) */
+  U.navActivity = { programs: 'tourism' };
+  U.activityOf = id => U.navActivity[id] || U.navActivity[U.routeParent[id]] || null;
+  U.can = id => { if (!M.has(U.activityOf(id))) return false; const n = U.navItem(id); return !n || n.it[4].includes(M.state.role); };
   U.readOnly = () => M.state.role === 'viewer';
 
   /* ---------- routes ---------- */
@@ -118,7 +121,7 @@
     const comp = U.company();
     const alerts = M.calc.alerts(U.cid());
     const navHtml = U.nav.map(g => {
-      const items = g.items.filter(it => it[4].includes(M.state.role));
+      const items = g.items.filter(it => it[4].includes(M.state.role) && M.has(U.navActivity[it[0]]));
       if (!items.length) return '';
       return `<div class="nav-group"><div class="nav-group-title">${M.tt(g.g[0], g.g[1])}</div>${items.map(it => `<a href="#${it[0]}" data-nav="${it[0]}">${U.icon(it[1])}<span>${M.tt(it[2], it[3])}</span>${it[0] === 'alerts' ? `<span class="count">${alerts.length}</span>` : it[0] === 'dispatch' ? `<span class="count">${U.db().bookings.filter(b => b.unassigned).length}</span>` : ''}</a>`).join('')}</div>`;
     }).join('');
@@ -156,6 +159,7 @@
     U.charts = [];
     if (U.timers) U.timers.forEach(t => clearInterval(t)); U.timers = [];
     const fn = U.routes[name] || U.routes.dashboard;
+    if (!M.has(U.activityOf(name))) { const n = (M.activityCatalog.find(x => x.code === U.activityOf(name)) || { name: { ar: '', en: '' } }).name; main.innerHTML = U.empty('lock', M.tt(`نشاط "${n.ar}" مش مفعّل لشركتك`, `The "${n.en}" activity is not enabled for your company`), M.tt('تواصل مع فريق سبيل لتفعيله.', 'Contact the Sabeel team to enable it.')); return; }
     if (!U.can(name)) { main.innerHTML = U.empty('lock', M.tt('لا تملك صلاحية لهذه الصفحة', 'You don’t have access to this page'), M.tt('اطلب من مدير النظام تعديل صلاحيات حسابك إذا كنت تحتاجها.', 'Ask your company admin to change your role if you need it.')); return; }
     try { main.innerHTML = fn(id) || ''; if (U.after.length) { const a = U.after; U.after = []; a.forEach(f => f()); } }
     catch (e) { console.error(e); main.innerHTML = U.empty('alert', M.tt('حصل خطأ في عرض الصفحة', 'This page failed to load'), String(e.message)); }

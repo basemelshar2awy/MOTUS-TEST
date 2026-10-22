@@ -5,7 +5,9 @@ const day = n => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
 
 async function seed(c) {
   const ok = async (a, b) => { const r = await c.do(a, b); if (r.status !== 200) throw new Error(a + ' ' + JSON.stringify(r.data)); return r.data; };
-  const snap0 = (await c.get('/api/snapshot')).data.data;
+  const snapRes = (await c.get('/api/snapshot')).data;
+  const snap0 = snapRes.data;
+  const tourism = (snapRes.activities || ['tourism']).includes('tourism');
   const wh = snap0.warehouses[0].id;
   const drv = [];
   for (const [n, e] of [['أحمد حسن', 'Ahmed Hassan'], ['محمود سعيد', 'Mahmoud Saeed'], ['خالد يوسف', 'Khaled Youssef'], ['علي إبراهيم', 'Ali Ibrahim']]) drv.push((await ok('driver.create', { name: { ar: n, en: e }, phone: '0100000000' + drv.length, licenseExpiry: '2030-06-01', salary: 4500, employment: 'both', commission: 120 })).id);
@@ -25,7 +27,7 @@ async function seed(c) {
   const inv = await ok('invoice.fromTrips', { clientId: trips[0].client, tripIds: [trips[0].id] });
   await ok('payment.create', { clientId: trips[0].client, amount: 500, method: 'cash' });
   await ok('booking.create', { clientId: cls[0], date: day(3), time: '10:00', pax: 20, pickup: 'CAI', destination: 'ALX', vehicleType: 'MB', price: 3500 });
-  await ok('program.create', { name: { ar: 'برنامج القاهرة والإسكندرية', en: 'Cairo & Alexandria' }, clientId: cls[1], start: day(7), pax: 12, price: 24000, vehicleId: veh[2], driverId: drv[2], days: [{ from: 'CAIAP', to: 'CAI' }, { from: 'CAI', to: 'ALX' }, { from: 'ALX', to: 'CAI' }] });
+  if (tourism) await ok('program.create', { name: { ar: 'برنامج القاهرة والإسكندرية', en: 'Cairo & Alexandria' }, clientId: cls[1], start: day(7), pax: 12, price: 24000, vehicleId: veh[2], driverId: drv[2], days: [{ from: 'CAIAP', to: 'CAI' }, { from: 'CAI', to: 'ALX' }, { from: 'ALX', to: 'CAI' }] });
   const sup = await ok('supplier.create', { name: { ar: 'مورد القطع', en: 'Parts Supplier' } });
   const item = await ok('item.create', { name: { ar: 'فلتر زيت', en: 'Oil filter' }, category: 'filters', unit: 'pc', cost: 120, minQty: 5 });
   await ok('stock.receipt', { warehouseId: wh, lines: [{ itemId: item.id, qty: 8, unitCost: 120 }] });

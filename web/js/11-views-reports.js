@@ -89,12 +89,15 @@
   const tabs = [['ops', ['تشغيلية', 'Operational']], ['fin', ['مالية ومحاسبية', 'Financial']], ['ana', ['تحليلية', 'Analytical']], ['stat', ['إحصائية', 'Statistical']], ['inv', ['المخازن والصيانة', 'Inventory & workshop']], ['trk', ['التتبع', 'Tracking']], ['prv', ['مزودي الخدمة', 'Service providers']], ['dsp', ['الحركة', 'Dispatch']]];
   let rTab = 'ops';
   U.act('rtab', el => { rTab = el.dataset.t; U.render(); });
+  /* reports that belong to one activity */
+  const REPORT_ACTIVITY = { progexec: 'tourism', progpl: 'tourism', variance: 'tourism' };
+  R.forEach(r => { r.activity = REPORT_ACTIVITY[r.id] || null; });
   U.reports = R;
   U.route('reports', () => U.head(tt('مركز التقارير', 'Reports center'), tt(`${R.length} تقرير. كل تقرير له فلتر فترة وجدول ورسم وتصدير Excel وPDF وCSV.`, `${R.length} reports. Each has a period filter, table, chart and Excel/PDF/CSV export.`)) +
-    `<div class="tabs">${tabs.map(t => `<button class="${rTab === t[0] ? 'on' : ''}" data-act="rtab" data-t="${t[0]}">${tt(...t[1])} <span class="muted num">${R.filter(r => r.tab === t[0]).length}</span></button>`).join('')}</div>` +
-    `<div class="report-list">${R.filter(r => r.tab === rTab).map(r => `<a class="report-item" href="#report.${r.id}" style="text-decoration:none;color:inherit"><b>${tt(...r.title)}</b><span>${tt(...r.desc)}</span></a>`).join('')}</div>`);
+    `<div class="tabs">${tabs.map(t => `<button class="${rTab === t[0] ? 'on' : ''}" data-act="rtab" data-t="${t[0]}">${tt(...t[1])} <span class="muted num">${R.filter(r => M.has(r.activity) && r.tab === t[0]).length}</span></button>`).join('')}</div>` +
+    `<div class="report-list">${R.filter(r => M.has(r.activity) && r.tab === rTab).map(r => `<a class="report-item" href="#report.${r.id}" style="text-decoration:none;color:inherit"><b>${tt(...r.title)}</b><span>${tt(...r.desc)}</span></a>`).join('')}</div>`);
   U.route('report', id => {
-    const r = R.find(x => x.id === id); if (!r) return U.empty('chart', tt('التقرير غير موجود', 'Report not found'));
+    const r = R.find(x => x.id === id && M.has(x.activity)); if (!r) return U.empty('chart', tt('التقرير غير موجود', 'Report not found'));
     const P = U.periodRange(); const out = r.build(P);
     const t = tabs.find(x => x[0] === r.tab);
     return U.head(tt(...r.title), `${tt(...r.desc)} · ${P.label}: ${M.date(P.from)} – ${M.date(P.to)}${out.note ? ' · ' + out.note : ''}`, U.periodSeg(), [[tt('التقارير', 'Reports'), 'reports'], [tt(...t[1])]]) +

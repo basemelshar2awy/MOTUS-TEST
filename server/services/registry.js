@@ -1,9 +1,12 @@
 'use strict';
 /* Action registry. Each business action declares who may run it; the dispatcher checks the
-   role, opens a company-scoped transaction, runs the handler, writes the data version and
-   translates database errors into plain bilingual messages. */
+   role, opens a company-scoped transaction, checks the company's activities (lib/activities),
+   runs the handler, writes the data version and translates database errors into plain
+   bilingual messages. An action of one activity declares it with define(name, roles, fn,
+   { activity: 'cargo' }) or is listed in activities.ACTION_ACTIVITY. */
 const db = require('../lib/db');
 const core = require('../lib/core');
+const activities = require('../lib/activities');
 const { forbidden, AppError, fromPg } = require('../lib/errors');
 
 const ROLES = ['super_admin', 'company_admin', 'fleet_manager', 'operations', 'accountant', 'maintenance', 'viewer'];
@@ -42,7 +45,9 @@ async function run(ctx, name, input) {
   if (!ctx.companyId) throw new AppError(400, 'no_company', 'اختر شركة أولاً', 'Select a company first');
   try {
     const out = await db.tx(ctx.companyId, async c => {
-      const res = await def.handler(ctx, input || {}, c);
+      // activity check: an action (or an input field) of an activity the company does not have is refused here
+      const gated = await activities.gate(c, ctx, name, def, input || {});
+      const res = await def.handler(ctx, gated, c);
       if (!def.opts.readOnly && !def.opts.noTouch) await core.touch(c, ctx);
       return res;
     });
