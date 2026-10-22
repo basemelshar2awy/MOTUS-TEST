@@ -15,6 +15,9 @@
     const hours = route ? route.hours * (km / route.km) : Math.max(1, km / 70);
     const toMin = s => (+s.slice(0, 2)) * 60 + (+s.slice(3, 5));
     const bStart = toMin(b.time || '10:00'), bEnd = Math.min(1439, bStart + Math.round(hours * 60) + 15);
+    // local 'YYYY-MM-DD HH:MM' moments, comparable as text with the calendar entries
+    const shiftLocal = (ts, min) => new Date(Date.parse(ts.replace(' ', 'T') + ':00Z') + min * 60000).toISOString().slice(0, 16).replace('T', ' ');
+    const bStartTs = `${b.date} ${b.time || '10:00'}`, bEndTs = shiftLocal(bStartTs, Math.round(hours * 60) + 15);
     return db.vehicles.filter(v => v.status !== 'sold').map(v => {
       const reasons = [], warns = [];
       if (v.seats > 0 && v.seats < b.pax) reasons.push([`السعة ${v.seats} مقعد أقل من ${b.pax} راكب`, `Capacity ${v.seats} is below ${b.pax} passengers`]);
@@ -22,9 +25,13 @@
       if (b.loadKg && (v.payloadKg || 0) < b.loadKg) reasons.push([`الحمولة ${M.n0(v.payloadKg || 0)} كجم أقل من ${M.n0(b.loadKg)} كجم`, `Payload ${M.n0(v.payloadKg || 0)} kg is below ${M.n0(b.loadKg)} kg`]);
       if (v.status === 'maintenance') reasons.push(['المركبة في الصيانة', 'Vehicle is in the workshop']);
       if (v.status === 'stopped') reasons.push(['المركبة متوقفة', 'Vehicle is stopped']);
-      const same = db.trips.filter(t => t.vehicleId === v.id && t.date === b.date && t.status !== 'cancelled');
-      const clash = same.find(t => { const a = toMin(t.startTime); let e = toMin(t.endTime); if (e <= a) e = 24 * 60; return bStart < e + 30 && bEnd + 30 > a; });
-      if (clash) reasons.push([`متعارضة مع الرحلة ${clash.number} (${clash.startTime}–${clash.endTime})`, `Overlaps trip ${clash.number} (${clash.startTime}–${clash.endTime})`]);
+      // unified calendar (real local times, so a night trip from yesterday counts too); 30-minute gap
+      const cal = ((db.calendar || {}).vehicles || []).filter(k => k.vehicleId === v.id);
+      const hit = cal.find(k => k.from < shiftLocal(bEndTs, 30) && k.to > shiftLocal(bStartTs, -30));
+      if (hit) {
+        const tr = hit.sourceType === 'trip' ? db.trips.find(t => t.id === hit.sourceId) : null;
+        reasons.push(tr ? [`متعارضة مع الرحلة ${tr.number} (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`, `Overlaps trip ${tr.number} (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`] : [`المركبة محجوزة (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`, `Vehicle is booked (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`]);
+      }
       if (v.licenseExpiry && v.licenseExpiry < b.date) reasons.push(['رخصة المركبة منتهية', 'Vehicle license expired']);
       if (v.insuranceExpiry && v.insuranceExpiry < b.date) reasons.push(['تأمين المركبة منتهي', 'Vehicle insurance expired']);
       const oil = C.oilStatus(cid, v); if (oil && oil.state === 'overdue') warns.push(['تغيير الزيت متأخر', 'Oil change overdue']);
