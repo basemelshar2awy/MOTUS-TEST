@@ -64,7 +64,7 @@ async function load(companyId) {
     const trips = await q('SELECT * FROM trips WHERE date >= $1 OR status IN (\'scheduled\',\'running\') ORDER BY date, start_time', [since]);
     D.trips = trips.map(r => Object.assign(base(r), {
       number: r.number, bookingId: r.booking_id, programId: r.program_id, clientId: r.client_id, vehicleId: r.vehicle_id, driverId: r.driver_id, date: r.date, type: r.type,
-      from: r.from_place, to: r.to_place, startTime: r.start_time, endTime: r.end_time, startKm: r.start_km, endKm: r.end_km, km: r.km, plannedKm: N(r.planned_km), gpsKm: r.gps_km,
+      from: r.from_place, to: r.to_place, startTime: r.start_time, endTime: r.end_time, startsAt: core.fmtTs(r.starts_at), endsAt: core.fmtTs(r.ends_at), durationMin: r.duration_min, startKm: r.start_km, endKm: r.end_km, km: r.km, plannedKm: N(r.planned_km), gpsKm: r.gps_km,
       revenue: N(r.revenue), expenses: { tolls: N(r.exp_tolls), parking: N(r.exp_parking), lodging: N(r.exp_lodging), other: N(r.exp_other) }, plannedTolls: N(r.planned_tolls),
       status: r.status, invoiced: !!r.invoice_id, invoiceId: r.invoice_id, pax: r.pax, flight: r.flight, flightStatus: r.flight_status, onTime: r.on_time, delayMin: r.delay_min,
       cancelReason: r.cancel_reason_ar ? [r.cancel_reason_ar, r.cancel_reason_en || r.cancel_reason_ar] : null,
@@ -155,6 +155,16 @@ async function load(companyId) {
       D.bookings.forEach(b => { b.flight = null; });
       D.passengers = D.passengers.map(p => Object.assign({}, p, { nationality: '', passportNo: '', hotel: '' }));
     }
+
+    // unified calendar: what occupies each vehicle and driver from yesterday to two weeks ahead
+    const calFrom = core.addDays(today, -1), calTo = core.addDays(today, 15);
+    const calQ = (table, col) => q(`SELECT ${col} owner_id, kind, source_type, source_id, note, lower(during) s, upper(during) e FROM ${table}
+      WHERE during && tstzrange(local_moment($1::uuid, $2::date, '00:00'), local_moment($1::uuid, $3::date, '00:00'), '[)') ORDER BY lower(during)`, [companyId, calFrom, calTo]);
+    const cal = r => ({ kind: r.kind, sourceType: r.source_type, sourceId: r.source_id, note: r.note, from: core.fmtTs(r.s), to: core.fmtTs(r.e) });
+    D.calendar = {
+      vehicles: (await calQ('vehicle_commitments', 'vehicle_id')).map(r => Object.assign({ vehicleId: r.owner_id }, cal(r))),
+      drivers: (await calQ('driver_commitments', 'driver_id')).map(r => Object.assign({ driverId: r.owner_id }, cal(r))),
+    };
 
     D.settings = settings;
     return {

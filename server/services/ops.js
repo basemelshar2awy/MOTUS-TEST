@@ -80,7 +80,25 @@ async function routeInfo(c, from, to, type) {
   return { km, type: t, hours: Math.max(1, km / 70), gates: 0, known: false };
 }
 
-/* ===================== AVAILABILITY CHECKS (server side, authoritative) ===================== */
+/* ===================== AVAILABILITY CHECKS (server side, authoritative) =====================
+   Times are minutes from the local midnight of `date` in the company's time zone; `end` may pass
+   1440 (the trip ends the next day or later). Conflicts come from the unified calendar
+   (vehicle_commitments / driver_commitments), which the database also guards against overlap;
+   the 30-minute gap between two commitments is a business rule checked here. */
+const GAP_MIN = 30;
+async function windowOf(c, date, start, end) {
+  const r = await c.query("SELECT local_moment(app_company_id(), $1::date, '00:00', $2) s, local_moment(app_company_id(), $1::date, '00:00', $3) e", [date, start, end]);
+  return r.rows[0];
+}
+const KIND = { maintenance: ['صيانة', 'maintenance'], blocked: ['محجوزة', 'blocked'], leave: ['إجازة', 'leave'] };
+async function calendarClashes(c, table, col, id, date, start, end, ignoreTripIds) {
+  const w = await windowOf(c, date, start, end);
+  return (await c.query(`SELECT k.kind, k.note, k.source_type, t.number, t.start_time, t.end_time, t.date
+      FROM ${table} k LEFT JOIN trips t ON k.source_type = 'trip' AND t.id = k.source_id
+     WHERE k.${col} = $1 AND k.during && tstzrange($2::timestamptz - make_interval(mins => ${GAP_MIN}), $3::timestamptz + make_interval(mins => ${GAP_MIN}), '[)')
+       AND NOT (k.source_type = 'trip' AND k.source_id = ANY($4::uuid[]))
+     ORDER BY lower(k.during)`, [id, w.s, w.e, ignoreTripIds])).rows;
+}
 async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loadKg) {
   const reasons = [];
   if (['maintenance', 'stopped', 'sold'].includes(v.status)) reasons.push({ ar: 'المركبة غير متاحة (' + v.status + ')', en: `Vehicle is not available (${v.status})` });
@@ -89,27 +107,30 @@ async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loa
   if (loadKg && Number(v.payload_kg) < loadKg) reasons.push({ ar: `الحمولة ${Number(v.payload_kg)} كجم أقل من ${loadKg} كجم`, en: `Payload ${Number(v.payload_kg)} kg is below ${loadKg} kg` });
   if (v.license_expiry && v.license_expiry < date) reasons.push({ ar: 'رخصة المركبة منتهية', en: 'Vehicle license expired' });
   if (v.insurance_expiry && v.insurance_expiry < date) reasons.push({ ar: 'تأمين المركبة منتهي', en: 'Vehicle insurance expired' });
-  const ts = (await c.query("SELECT id, number, start_time, end_time, program_id FROM trips WHERE vehicle_id = $1 AND date = $2 AND status <> 'cancelled'", [v.id, date])).rows.filter(t => !ignoreTripIds.includes(t.id));
-  for (const t of ts) {
-    const a = toMin(t.start_time); let e = toMin(t.end_time); if (e <= a) e = 24 * 60;
-    if (start < e + 30 && end + 30 > a) { reasons.push({ ar: `متعارضة مع الرحلة ${t.number} (${t.start_time}–${t.end_time})`, en: `Overlaps trip ${t.number} (${t.start_time}–${t.end_time})` }); break; }
-  }
+  const hit = (await calendarClashes(c, 'vehicle_commitments', 'vehicle_id', v.id, date, start, end, ignoreTripIds))[0];
+  if (hit) reasons.push(hit.number
+    ? { ar: `متعارضة مع الرحلة ${hit.number} (${hit.date === date ? '' : hit.date + ' '}${hit.start_time}–${hit.end_time})`, en: `Overlaps trip ${hit.number} (${hit.date === date ? '' : hit.date + ' '}${hit.start_time}–${hit.end_time})` }
+    : { ar: `المركبة ${(KIND[hit.kind] || [hit.kind])[0]} في الفترة دي ${hit.note}`.trim(), en: `Vehicle is ${(KIND[hit.kind] || [, hit.kind])[1]} in this period ${hit.note}`.trim() });
   return reasons;
 }
 async function checkDriver(c, d, date, start, end, ignoreTripIds = [], maxHours) {
   const reasons = [], warns = [];
   if (d.status !== 'active') reasons.push({ ar: 'السائق غير نشط', en: 'Driver is inactive' });
   if (d.license_expiry < date) reasons.push({ ar: 'رخصة السائق منتهية', en: "Driver's license expired" });
-  const av = (await c.query('SELECT kind FROM availability WHERE driver_id = $1 AND from_date <= $2 AND to_date >= $2 LIMIT 1', [d.id, date])).rows[0];
-  if (av) reasons.push({ ar: 'السائق في ' + (av.kind === 'leave' ? 'إجازة' : av.kind === 'sick' ? 'إجازة مرضية' : 'راحة'), en: `Driver is on ${av.kind}` });
-  const ts = (await c.query("SELECT id, number, start_time, end_time FROM trips WHERE driver_id = $1 AND date = $2 AND status <> 'cancelled'", [d.id, date])).rows.filter(t => !ignoreTripIds.includes(t.id));
-  let hours = 0;
-  for (const t of ts) {
-    const a = toMin(t.start_time); let e = toMin(t.end_time); if (e <= a) e = 24 * 60;
-    hours += (e - a) / 60;
-    if (start < e + 30 && end + 30 > a) reasons.push({ ar: `السائق مشغول في الرحلة ${t.number}`, en: `Driver is busy on trip ${t.number}` });
+  const hits = await calendarClashes(c, 'driver_commitments', 'driver_id', d.id, date, start, end, ignoreTripIds);
+  for (const h of hits) {
+    if (h.kind === 'leave') reasons.push({ ar: 'السائق في ' + (h.note === 'leave' ? 'إجازة' : h.note === 'sick' ? 'إجازة مرضية' : 'راحة'), en: `Driver is on ${h.note}` });
+    else if (h.number) reasons.push({ ar: `السائق مشغول في الرحلة ${h.number}`, en: `Driver is busy on trip ${h.number}` });
+    else reasons.push({ ar: 'السائق محجوز في الفترة دي', en: 'Driver is blocked in this period' });
   }
-  if (maxHours && hours + (end - start) / 60 > maxHours) warns.push({ ar: `سيتجاوز ${maxHours} ساعات قيادة`, en: `Would exceed ${maxHours} driving hours` });
+  if (maxHours) {
+    // driving hours already planned for that local day (trips only)
+    const day = await windowOf(c, date, 0, 1440);
+    const r = await c.query(`SELECT coalesce(sum(extract(epoch FROM (least(upper(during), $3::timestamptz) - greatest(lower(during), $2::timestamptz)))), 0) / 3600 h
+        FROM driver_commitments WHERE driver_id = $1 AND kind = 'trip' AND during && tstzrange($2::timestamptz, $3::timestamptz, '[)') AND NOT (source_type = 'trip' AND source_id = ANY($4::uuid[]))`, [d.id, day.s, day.e, ignoreTripIds]);
+    const hours = Number(r.rows[0].h) || 0;
+    if (hours + (end - start) / 60 > maxHours) warns.push({ ar: `سيتجاوز ${maxHours} ساعات قيادة`, en: `Would exceed ${maxHours} driving hours` });
+  }
   return { reasons, warns };
 }
 function blocked(reasons, what) {
@@ -123,7 +144,7 @@ async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
   const v = await core.lock(c, 'vehicles', vehicleId, 'vehicle');
   const ri = await routeInfo(c, b.pickup, b.destination, b.route_type);
   const start = toMin(b.time), dur = Math.round((b.route_km ? b.route_km / Math.max(1, ri.km) * ri.hours : ri.hours) * 60) + 15;
-  const end = Math.min(24 * 60 - 1, start + dur);
+  const end = start + dur;   // may run past midnight: the calendar works with real moments
   const vr = await checkVehicle(c, v, b.date, start, end, [], b.pax, b.load_kg ? Number(b.load_kg) : null);
   if (vr.length) throw blocked(vr, { ar: v.code, en: v.code });
   let d = null;
@@ -141,7 +162,7 @@ async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
   const number = await core.nextNumber(c, ctx, 'TR', b.date);
   const t = await insert(c, 'trips', {
     company_id: ctx.companyId, number, booking_id: b.id, program_id: b.program_id, client_id: b.client_id, vehicle_id: v.id, driver_id: d.id, date: b.date,
-    type: ri.type, from_place: b.pickup, to_place: b.destination, start_time: b.time, end_time: fromMin(end), planned_km: b.route_km || ri.km,
+    type: ri.type, from_place: b.pickup, to_place: b.destination, start_time: b.time, end_time: fromMin(end), duration_min: dur, planned_km: b.route_km || ri.km,
     planned_tolls: ri.gates * vt.toll_gate, revenue: opts.revenue != null ? opts.revenue : b.price, pax: b.pax, flight: b.flight, flight_status: b.flight ? 'ontime' : null, status: 'scheduled', created_by: ctx.user.name,
   });
   await c.query("UPDATE bookings SET unassigned = false, status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [b.id]);
@@ -284,14 +305,14 @@ async function scheduleProgram(c, ctx, programId) {
   for (const day of days) {
     if (existing.includes(day.date)) continue;
     const ri = await routeInfo(c, day.from_code, day.to_code);
-    const start = toMin(day.time), end = Math.min(24 * 60 - 1, start + Math.round(Math.max(1, day.km / 70) * 60));
+    const start = toMin(day.time), end = start + Math.round(Math.max(1, day.km / 70) * 60);
     const vr = await checkVehicle(c, v, day.date, start, end, [], prog.pax);
     if (vr.length) throw blocked(vr, { ar: `${v.code} يوم ${day.day}`, en: `${v.code} day ${day.day}` });
     const dr = await checkDriver(c, d, day.date, start, end, [], s.maxDriveHours);
     if (dr.reasons.length) throw blocked(dr.reasons, { ar: `${d.name_ar} يوم ${day.day}`, en: `${d.name_en} day ${day.day}` });
     const revenue = round2(prog.price * (0.5 / days.length + 0.5 * day.km / totalKm));
     const number = await core.nextNumber(c, ctx, 'TR', day.date);
-    await insert(c, 'trips', { company_id: ctx.companyId, number, booking_id: bk.id, program_id: programId, client_id: prog.client_id, vehicle_id: v.id, driver_id: d.id, date: day.date, type: day.km > 150 ? 'intercity' : ri.type, from_place: day.from_code, to_place: day.to_code, start_time: day.time, end_time: fromMin(end), planned_km: day.km, planned_tolls: ri.gates * vt.toll_gate, revenue, pax: prog.pax, status: 'scheduled', created_by: ctx.user.name });
+    await insert(c, 'trips', { company_id: ctx.companyId, number, booking_id: bk.id, program_id: programId, client_id: prog.client_id, vehicle_id: v.id, driver_id: d.id, date: day.date, type: day.km > 150 ? 'intercity' : ri.type, from_place: day.from_code, to_place: day.to_code, start_time: day.time, end_time: fromMin(end), duration_min: end - start, planned_km: day.km, planned_tolls: ri.gates * vt.toll_gate, revenue, pax: prog.pax, status: 'scheduled', created_by: ctx.user.name });
   }
   await c.query("UPDATE bookings SET unassigned = false, status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [bk.id]);
   await c.query("UPDATE programs SET status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [programId]);
@@ -404,8 +425,8 @@ define('trip.update', G.ops, async (ctx, i, c) => {
     if (t.status !== 'scheduled') throw conflict('state', 'لا يمكن تغيير السائق أو الموعد بعد البدء', 'Driver or time cannot change after the trip started');
     const s = await core.settings(c, ctx);
     const startT = has(i, 'startTime') ? V.time(i, 'startTime', { req: true }) : t.start_time;
-    const dur = ((toMin(t.end_time) - toMin(t.start_time)) + 1440) % 1440 || 60;
-    const start = toMin(startT), end = Math.min(1439, start + dur);
+    const dur = t.duration_min || ((toMin(t.end_time) - toMin(t.start_time)) + 1440) % 1440 || 60;
+    const start = toMin(startT), end = start + dur;
     const v = await core.lock(c, 'vehicles', t.vehicle_id);
     const vr = (await checkVehicle(c, v, t.date, start, end, [t.id], t.pax)).filter(r => !/maintenance|الصيانة|غير متاحة/.test(r.ar));
     if (vr.length) throw blocked(vr, { ar: v.code, en: v.code });
@@ -413,7 +434,7 @@ define('trip.update', G.ops, async (ctx, i, c) => {
     const d = await core.lock(c, 'drivers', did, 'driver');
     const dr = await checkDriver(c, d, t.date, start, end, [t.id], s.maxDriveHours);
     if (dr.reasons.length) throw blocked(dr.reasons, { ar: d.name_ar, en: d.name_en });
-    f.driver_id = did; f.start_time = startT; f.end_time = fromMin(end);
+    f.driver_id = did; f.start_time = startT; f.end_time = fromMin(end); f.duration_min = dur;
   }
   await update(c, 'trips', t.id, f);
   await core.audit(c, ctx, 'update', 'trip', t.number, { field: Object.keys(f).join(', ') });
