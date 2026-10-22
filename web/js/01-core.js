@@ -75,6 +75,10 @@ M.companies = [];
 M.activities = [];
 M.activityCatalog = [];
 M.has = code => !code || M.activities.includes(code);
+/* vehicle types a company can use for NEW vehicles and bookings (active + a category of its activities) */
+M.vehicleCategories = [];
+M.usableTypes = () => Object.keys(M.vehicleClasses).filter(k => M.vehicleClasses[k].usable !== false);
+M.cargoTypes = () => M.usableTypes().filter(k => (M.vehicleClasses[k].payloadKg || 0) > 0);
 M.vehicleClasses = {}; M.places = {}; M.routes = {}; M.fuelPrice = { diesel: 0, gasoline: 0 };
 M.applySnapshot = snap => {
   const D = snap.data, cid = snap.company.id;
@@ -85,6 +89,7 @@ M.applySnapshot = snap => {
   M.db = {}; M.db[cid] = D;
   M.vehicleClasses = {};
   D.vehicleTypes.forEach(t => { M.vehicleClasses[t.code] = t; });
+  M.vehicleCategories = D.vehicleCategories || [];
   M.places = {};
   D.geofences.forEach(g => { M.places[g.code] = g; });
   M.routes = {};

@@ -18,7 +18,7 @@
       U.card(null, U.table({ id: 'items', rows, emptyTitle: tt('لا توجد أصناف بعد', 'No items yet'), emptyText: tt('أضف قطع الغيار والزيوت والفلاتر أو استوردها من ملف.', 'Add spare parts, oils and filters or import them from a file.'), columns: [
         { label: tt('الصنف', 'Item'), value: r => M.L(r.it.name), render: r => `<a class="cell-main" href="#item.${r.it.id}">${M.esc(M.L(r.it.name))}</a><div class="cell-sub mono">${M.esc(r.it.code)}${r.it.oem ? ' · ' + M.esc(r.it.oem) : ''}</div>` },
         { label: tt('الفئة', 'Category'), value: r => cat(r.it.category) },
-        { label: tt('يناسب', 'Fits'), value: r => r.it.compatible.join(','), render: r => r.it.compatible.map(t => U.badge(U.vtype(t), 'plain outline')).join(' ') },
+        { label: tt('يناسب', 'Fits'), value: r => r.it.compatible.join(','), render: r => r.it.compatible.length ? r.it.compatible.map(t => U.badge(U.vtype(t), 'plain outline')).join(' ') : `<span class="muted small">${tt('كل الأنواع', 'All types')}</span>` },
         { label: tt('الرصيد', 'On hand'), num: 1, value: r => r.s.qty, render: r => `${M.n1(r.s.qty)} <span class="muted small">${unit(r.it.unit)}</span>` },
         { label: tt('حد الطلب', 'Reorder pt'), num: 1, value: r => r.it.reorderPoint },
         { label: tt('متوسط التكلفة', 'Avg cost'), num: 1, value: r => r.s.qty ? r.s.value / r.s.qty : r.it.avgCost, render: r => M.money(r.s.qty ? r.s.value / r.s.qty : r.it.avgCost) },
@@ -39,7 +39,7 @@
     it.id ? null : { f: 'cost', label: tt('التكلفة الافتتاحية للوحدة', 'Initial unit cost'), type: 'number', attrs: 'min="0" step="0.01"' },
     { f: 'barcode', label: tt('الباركود', 'Barcode'), value: it.barcode, attrs: 'dir="ltr"' },
     { f: 'serial', label: tt('يُتتبع بالسيريال (كاوتش/بطاريات)', 'Tracked by serial (tires/batteries)'), type: 'checkbox', value: it.serial },
-    { f: 'compatible', label: tt('يناسب الأنواع (افصل بفاصلة: LB,MB,MC,SD)', 'Fits types (comma separated: LB,MB,MC,SD)'), value: (it.compatible || ['LB', 'MB', 'MC', 'SD']).join(','), attrs: 'dir="ltr"' },
+    { f: 'compatible', label: tt(`يناسب الأنواع (أكواد بفاصلة: ${Object.keys(M.vehicleClasses).join(',')}؛ فاضي = كل الأنواع)`, `Fits types (codes, comma separated: ${Object.keys(M.vehicleClasses).join(',')}; empty = all types)`), value: (it.compatible || ['LB', 'MB', 'MC', 'SD']).join(','), attrs: 'dir="ltr"' },
   ]; };
   const itemMap = d => { d.compatible = String(d.compatible || '').split(/[,\s]+/).map(x => x.trim().toUpperCase()).filter(Boolean); return d; };
   U.act('item-new', () => U.formModal(tt('صنف جديد', 'New item'), itemFields(), 'item.create', { map: itemMap, ok: r => tt('تمت إضافة الصنف ', 'Item added ') + r.code }));

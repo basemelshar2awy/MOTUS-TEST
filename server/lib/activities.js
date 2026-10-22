@@ -116,6 +116,8 @@ async function apply(c, companyId, list, actor) {
     await c.query('UPDATE company_activities SET enabled = false, disabled_at = now() WHERE activity = $1', [code]);
     await c.query("INSERT INTO company_activity_events (company_id, activity, action, actor) VALUES ($1,$2,'disabled',$3)", [companyId, code, actor]);
   }
+  // a newly enabled activity brings its starting vehicle types (lazy require: vehicletypes needs this module)
+  if (on.length) await require('./vehicletypes').seedDefaults(c, companyId, list);
   return { enabled: on, disabled: off };
 }
 

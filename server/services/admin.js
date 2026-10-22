@@ -6,6 +6,8 @@ const { define, G } = require('./registry');
 const V = require('../lib/validate');
 const core = require('../lib/core');
 const activities = require('../lib/activities');
+const vtypes = require('../lib/vehicletypes');
+const D = require('../lib/defaults');
 const auth = require('../lib/auth');
 const secrets = require('../lib/secrets');
 const { insert, update, defined } = require('../lib/sql');
@@ -55,14 +57,40 @@ define('settings.update', G.admin.concat(['fleet_manager']), async (ctx, i, c) =
   await core.audit(c, ctx, 'update', 'settings', '', { field: Object.keys(next).join(', '), before: Object.keys(next).map(k => JSON.stringify(cur[k])).join(', '), after: Object.keys(next).map(k => JSON.stringify(next[k])).join(', ') });
 });
 
+/* type fields shared by create and update (capacity: seats + payload kg + volume m³) */
+const typeFields = (i, name) => defined({ name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined, seats: P(i, 'seats', V.int, { min: 0, max: 120 }),
+  payload_kg: P(i, 'payloadKg', V.num, { min: 0, max: 100000 }), volume_m3: P(i, 'volumeM3', V.num, { min: 0, max: 500 }), fuel: P(i, 'fuel', V.oneOf, ['diesel', 'gasoline', 'electric', 'hybrid', 'cng']), oil_km: P(i, 'oilKm', V.int, { min: 1000, max: 100000 }), life_years: P(i, 'lifeYears', V.num, { gt: 0, max: 40 }), life_km: P(i, 'lifeKm', V.int, { min: 1000 }), salvage_pct: P(i, 'salvagePct', V.num, { min: 0, max: 0.9 }), tank_l: P(i, 'tankL', V.num, { gt: 0 }), kmpl: P(i, 'kmpl', V.num, { gt: 0, max: 50 }), rate_km: P(i, 'rateKm', V.num, { min: 0 }), base_price: P(i, 'basePrice', V.num, { min: 0 }), toll_gate: P(i, 'tollGate', V.num, { min: 0 }), oil_cost: P(i, 'oilCost', V.num, { min: 0 }), oil_liters: P(i, 'oilLiters', V.num, { min: 0 }), insurance: P(i, 'insurance', V.num, { min: 0 }), license: P(i, 'license', V.num, { min: 0 }) });
 define('vehicleType.update', G.fleet, async (ctx, i, c) => {
-  const code = V.oneOf(i, 'code', ['LB', 'MB', 'MC', 'SD'], { req: true });
+  const code = V.str(i, 'code', { req: true, max: 8 });
   const t = (await c.query('SELECT * FROM vehicle_types WHERE code = $1 FOR UPDATE', [code])).rows[0];
   if (!t) throw notFound('vehicle type');
-  const name = P(i, 'name', V.text2, { max: 60 });
-  const f = defined({ name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined, seats: P(i, 'seats', V.int, { min: 1, max: 100 }), oil_km: P(i, 'oilKm', V.int, { min: 1000, max: 100000 }), life_years: P(i, 'lifeYears', V.num, { gt: 0, max: 40 }), life_km: P(i, 'lifeKm', V.int, { min: 1000 }), salvage_pct: P(i, 'salvagePct', V.num, { min: 0, max: 0.9 }), tank_l: P(i, 'tankL', V.num, { gt: 0 }), kmpl: P(i, 'kmpl', V.num, { gt: 0, max: 50 }), rate_km: P(i, 'rateKm', V.num, { min: 0 }), base_price: P(i, 'basePrice', V.num, { min: 0 }), toll_gate: P(i, 'tollGate', V.num, { min: 0 }), oil_cost: P(i, 'oilCost', V.num, { min: 0 }), oil_liters: P(i, 'oilLiters', V.num, { min: 0 }), insurance: P(i, 'insurance', V.num, { min: 0 }), license: P(i, 'license', V.num, { min: 0 }) });
+  const f = typeFields(i, P(i, 'name', V.text2, { max: 60 }));
+  if (has(i, 'category')) { const cat = await vtypes.checkCategory(c, ctx, V.str(i, 'category', { req: true, max: 20 })); f.category = cat.code; }
+  if (has(i, 'active')) f.active = V.bool(i, 'active');
+  const seats = f.seats != null ? f.seats : t.seats, payload = f.payload_kg != null ? f.payload_kg : Number(t.payload_kg);
+  if (!(seats > 0) && !(payload > 0)) throw bad('capacity', 'النوع محتاج عدد كراسي أو حمولة', 'The type needs seats or a payload', 'seats');
   await update(c, 'vehicle_types', t.id, f);
   await core.audit(c, ctx, 'update', 'vehicle_type', code, { field: Object.keys(f).join(', ') });
+});
+
+/* a new type of the company's own: its category must serve one of the company's activities;
+   costs and life values start from the default type of the same category and are editable */
+define('vehicleType.create', G.fleet, async (ctx, i, c) => {
+  const code = V.str(i, 'code', { req: true, max: 8, re: vtypes.CODE });
+  const cat = await vtypes.checkCategory(c, ctx, V.str(i, 'category', { req: true, max: 20 }));
+  const name = V.text2(i, 'name', { req: true, max: 60 });
+  if ((await c.query('SELECT 1 FROM vehicle_types WHERE code = $1', [code])).rowCount) throw conflict('duplicate', `الكود ${code} مستخدم لنوع تاني`, `The code ${code} is already used by another type`);
+  const tpl = D.VEHICLE_TYPES.find(t => t.category === cat.code) || D.VEHICLE_TYPES[0];
+  const f = typeFields(i, name);
+  const row = Object.assign({
+    company_id: ctx.companyId, code, category: cat.code, seats: tpl.seats, payload_kg: tpl.payloadKg || 0, volume_m3: tpl.volumeM3 || 0, fuel: tpl.fuel,
+    oil_km: tpl.oilKm, life_years: tpl.lifeYears, life_km: tpl.lifeKm, salvage_pct: tpl.salvagePct, tank_l: tpl.tank, kmpl: tpl.kmpl, price_min: tpl.priceMin, price_max: tpl.priceMax,
+    rate_km: tpl.rateKm, base_price: tpl.base, toll_gate: tpl.tollGate, oil_cost: tpl.oilCost, oil_liters: tpl.oilLiters, insurance: tpl.insurance, license: tpl.license, tire_positions: tpl.tires, created_by: ctx.user.name,
+  }, f);
+  if (!(row.seats > 0) && !(row.payload_kg > 0)) throw bad('capacity', 'النوع محتاج عدد كراسي أو حمولة', 'The type needs seats or a payload', 'seats');
+  const t = await insert(c, 'vehicle_types', row);
+  await core.audit(c, ctx, 'create', 'vehicle_type', code);
+  return { id: t.id, code };
 });
 
 /* ---------- users (company scope; users table is filtered by company explicitly) ---------- */

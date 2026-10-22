@@ -48,6 +48,8 @@ async function grantApp(c, appUser) {
   await q(`GRANT SELECT ON schema_migrations TO ${appUser}`);
   // history tables are append-only for the application
   await q(`REVOKE UPDATE, DELETE ON audit_log, stock_movements, platform_audit, company_activity_events FROM ${appUser}`);
+  // platform reference catalogs are read-only for the application
+  await q(`REVOKE INSERT, UPDATE, DELETE ON vehicle_categories FROM ${appUser}`);
   await q(`GRANT EXECUTE ON FUNCTION api_key_lookup(text), provider_lookup(uuid), webhook_due_companies(), company_counts(), company_activity_list() TO ${appUser}`);
 }
 

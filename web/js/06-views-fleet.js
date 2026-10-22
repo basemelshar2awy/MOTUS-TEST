@@ -90,7 +90,7 @@
   });
   function vehicleFields(v) {
     const db = U.db(); v = v || {};
-    const types = Object.keys(M.vehicleClasses);
+    const types = M.usableTypes();
     return [
       { f: 'plate', label: tt('رقم اللوحة', 'Plate number'), value: v.plate ? M.L(v.plate) : '', req: true, attrs: 'placeholder="ن ق ط 1234"' },
       v.id ? null : { f: 'type', label: tt('النوع', 'Type'), type: 'select', options: types.map(k => [k, U.vtype(k)]), req: true },
@@ -98,7 +98,9 @@
       { f: 'year', label: tt('سنة الصنع', 'Year'), type: 'number', value: v.year || +M.TODAY.slice(0, 4), attrs: 'min="1980" max="2100"' },
       { f: 'chassis', label: tt('رقم الشاسيه', 'Chassis'), value: v.chassis, attrs: 'dir="ltr"' },
       { f: 'color', label: tt('اللون', 'Color'), value: v.color ? M.tt(v.color[0], v.color[1]) : '' },
-      { f: 'seats', label: tt('المقاعد', 'Seats'), type: 'number', value: v.seats, attrs: 'min="1" max="100"', help: v.id ? '' : tt('فارغ = من إعدادات النوع', 'Empty = from the type settings') },
+      { f: 'seats', label: tt('المقاعد', 'Seats'), type: 'number', value: v.seats, attrs: 'min="0" max="120"', help: v.id ? '' : tt('فارغ = من إعدادات النوع', 'Empty = from the type settings') },
+      M.cargoTypes().length || (v.payloadKg || 0) > 0 ? { f: 'payloadKg', label: tt('الحمولة (كجم)', 'Payload (kg)'), type: 'number', value: v.payloadKg, attrs: 'min="0"', help: v.id ? '' : tt('فارغ = من إعدادات النوع', 'Empty = from the type settings') } : null,
+      M.cargoTypes().length || (v.volumeM3 || 0) > 0 ? { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', value: v.volumeM3, attrs: 'min="0" step="0.1"' } : null,
       { f: 'ownership', label: tt('الملكية', 'Ownership'), type: 'select', value: v.ownership || 'owned', options: [['owned', tt('مملوكة', 'Owned')], ['installment', tt('تقسيط', 'Installment')], ['leased', tt('مؤجرة', 'Leased')]] },
       { f: 'purchaseDate', label: tt('تاريخ الشراء', 'Purchase date'), type: 'date', value: v.purchaseDate || M.TODAY, req: true },
       { f: 'purchasePrice', label: tt('سعر الشراء (رأس المال)', 'Purchase price (capital)'), type: 'number', value: v.purchasePrice, req: true, attrs: 'min="0"' },
@@ -117,7 +119,7 @@
     ];
   }
   U.act('add-vehicle', () => {
-    if (!Object.keys(M.vehicleClasses).length) { U.toast(tt('أضف أنواع المركبات من الإعدادات أولاً', 'Set up vehicle types in settings first')); return; }
+    if (!M.usableTypes().length) { U.toast(tt('أضف أنواع المركبات من الإعدادات أولاً', 'Set up vehicle types in settings first')); return; }
     U.formModal(tt('إضافة مركبة', 'Add vehicle'), vehicleFields(), 'vehicle.create', { ok: r => tt('تمت إضافة المركبة ', 'Vehicle added ') + r.code, after: r => { location.hash = 'vehicle.' + r.id; U.full(); } });
   });
   U.act('edit-vehicle', el => { const v = U.find('vehicles', el.dataset.id); U.formModal(tt('تعديل المركبة', 'Edit vehicle'), vehicleFields(v), 'vehicle.update', { map: d => { d.id = v.id; d.color = d.color || ''; return d; } }); });
@@ -138,7 +140,7 @@
       const r = C.readiness(cid, v);
       body = `<div class="cols-2">` + U.card(tt('البيانات الأساسية', 'Details'), U.dl([
         [tt('اللوحة', 'Plate'), M.L(v.plate)], [tt('النوع', 'Type'), U.vtype(v.type)], [tt('الماركة والموديل', 'Make & model'), `${v.make} ${v.model}`], [tt('سنة الصنع', 'Year'), v.year], [tt('رقم الشاسيه', 'Chassis'), `<span class="mono">${v.chassis}</span>`], [tt('اللون', 'Color'), M.tt(v.color[0], v.color[1])],
-        [tt('المقاعد', 'Seats'), v.seats], [tt('الوقود', 'Fuel'), v.fuel === 'diesel' ? tt('سولار', 'Diesel') : tt('بنزين', 'Gasoline')], [tt('الملكية', 'Ownership'), U.status(v.ownership)], [tt('الفرع', 'Branch'), M.L(U.find('branches', v.branchId).name)],
+        [tt('الفئة', 'Category'), U.catName((M.vehicleClasses[v.type] || {}).category)], [tt('المقاعد', 'Seats'), v.seats], (v.payloadKg || 0) > 0 ? [tt('الحمولة', 'Payload'), `${M.n0(v.payloadKg)} ${tt('كجم', 'kg')}${v.volumeM3 ? ` · ${M.n1(v.volumeM3)} ${tt('م³', 'm³')}` : ''}`] : null, [tt('الوقود', 'Fuel'), U.fuelName(v.fuel)], [tt('الملكية', 'Ownership'), U.status(v.ownership)], [tt('الفرع', 'Branch'), M.L(U.find('branches', v.branchId).name)],
         [tt('السائق المخصص', 'Assigned driver'), drv ? U.dLabel(drv) : '—'], [tt('العداد الحالي', 'Odometer'), `<span class="num">${M.n0(v.odometer)} ${tt('كم', 'km')}</span>`], [tt('مرجع ERP', 'ERP reference'), v.externalRef ? `<code>${v.externalRef}</code> ${U.status(v.syncStatus)}` : '—'],
       ])) + `<div class="grid">` + U.card(tt('المستندات', 'Documents'), U.dl([[tt('انتهاء الرخصة', 'License expiry'), `${M.date(v.licenseExpiry)} ${days(v.licenseExpiry)}`], [tt('انتهاء التأمين', 'Insurance expiry'), `${M.date(v.insuranceExpiry)} ${days(v.insuranceExpiry)}`], [tt('التأمين السنوي', 'Annual insurance'), M.money(v.insuranceAnnual)], [tt('الرخصة السنوية', 'Annual license'), M.money(v.licenseAnnual)]])) +
         U.card(tt('جاهزية بكرة', 'Ready for tomorrow'), `${r.ready ? U.status('ready') : U.status('notready')}<div style="margin-top:8px">${r.reasons.length ? r.reasons.map(x => `<div class="list-row"><span class="sev medium"></span><div class="grow">${tt(x[0], x[1])}</div></div>`).join('') : `<span class="muted small">${tt('كل الفحوصات سليمة', 'All checks passed')}</span>`}</div>`) +

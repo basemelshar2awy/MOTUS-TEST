@@ -12,11 +12,7 @@ const { bad, conflict, notFound, fromPg } = require('./errors');
 async function seedCompany(c, companyId, opts) {
   const ins = (sql, p) => c.query(sql, p);
   await ins('INSERT INTO company_settings (company_id, data) VALUES ($1, $2)', [companyId, JSON.stringify({ goLive: core.today() })]);
-  for (const t of D.VEHICLE_TYPES) {
-    await ins(`INSERT INTO vehicle_types (company_id, code, name_ar, name_en, seats, fuel, oil_km, life_years, life_km, salvage_pct, tank_l, kmpl, price_min, price_max, rate_km, base_price, toll_gate, oil_cost, oil_liters, insurance, license, tire_positions)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-    [companyId, t.code, t.ar, t.en, t.seats, t.fuel, t.oilKm, t.lifeYears, t.lifeKm, t.salvagePct, t.tank, t.kmpl, t.priceMin, t.priceMax, t.rateKm, t.base, t.tollGate, t.oilCost, t.oilLiters, t.insurance, t.license, t.tires]);
-  }
+  // vehicle types come with the company's activities (activities.apply → vehicletypes.seedDefaults)
   if (opts.referencePlaces !== false) {
     for (const [code, ar, en, lat, lng, kind, radius] of D.PLACES) await ins('INSERT INTO places (company_id, code, name_ar, name_en, kind, lat, lng, radius_m) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [companyId, code, ar, en, kind, lat, lng, radius]);
     for (const [base, from, to, km, type, gates, hours] of D.ROUTES) await ins('INSERT INTO routes (company_id, base_city, from_code, to_code, km, type, toll_gates, hours) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [companyId, base, from, to, km, type, gates, hours]);

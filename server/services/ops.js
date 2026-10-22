@@ -6,6 +6,7 @@ const V = require('../lib/validate');
 const core = require('../lib/core');
 const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound, AppError } = require('../lib/errors');
+const vtypes = require('../lib/vehicletypes');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -80,10 +81,12 @@ async function routeInfo(c, from, to, type) {
 }
 
 /* ===================== AVAILABILITY CHECKS (server side, authoritative) ===================== */
-async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax) {
+async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loadKg) {
   const reasons = [];
   if (['maintenance', 'stopped', 'sold'].includes(v.status)) reasons.push({ ar: 'المركبة غير متاحة (' + v.status + ')', en: `Vehicle is not available (${v.status})` });
-  if (pax && v.seats < pax) reasons.push({ ar: `السعة ${v.seats} أقل من ${pax} راكب`, en: `Capacity ${v.seats} is below ${pax} passengers` });
+  if (pax && v.seats > 0 && v.seats < pax) reasons.push({ ar: `السعة ${v.seats} أقل من ${pax} راكب`, en: `Capacity ${v.seats} is below ${pax} passengers` });
+  if (pax > 1 && !(v.seats > 0)) reasons.push({ ar: 'المركبة دي للبضائع ومافيهاش كراسي ركاب', en: 'This vehicle carries cargo and has no passenger seats' });
+  if (loadKg && Number(v.payload_kg) < loadKg) reasons.push({ ar: `الحمولة ${Number(v.payload_kg)} كجم أقل من ${loadKg} كجم`, en: `Payload ${Number(v.payload_kg)} kg is below ${loadKg} kg` });
   if (v.license_expiry && v.license_expiry < date) reasons.push({ ar: 'رخصة المركبة منتهية', en: 'Vehicle license expired' });
   if (v.insurance_expiry && v.insurance_expiry < date) reasons.push({ ar: 'تأمين المركبة منتهي', en: 'Vehicle insurance expired' });
   const ts = (await c.query("SELECT id, number, start_time, end_time, program_id FROM trips WHERE vehicle_id = $1 AND date = $2 AND status <> 'cancelled'", [v.id, date])).rows.filter(t => !ignoreTripIds.includes(t.id));
@@ -121,7 +124,7 @@ async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
   const ri = await routeInfo(c, b.pickup, b.destination, b.route_type);
   const start = toMin(b.time), dur = Math.round((b.route_km ? b.route_km / Math.max(1, ri.km) * ri.hours : ri.hours) * 60) + 15;
   const end = Math.min(24 * 60 - 1, start + dur);
-  const vr = await checkVehicle(c, v, b.date, start, end, [], b.pax);
+  const vr = await checkVehicle(c, v, b.date, start, end, [], b.pax, b.load_kg ? Number(b.load_kg) : null);
   if (vr.length) throw blocked(vr, { ar: v.code, en: v.code });
   let d = null;
   const candidates = driverId ? [driverId] : [v.driver_id, ...(await c.query("SELECT id FROM drivers WHERE vehicle_id IS NULL AND status = 'active' ORDER BY code")).rows.map(r => r.id)].filter(Boolean);
@@ -155,10 +158,15 @@ async function createBooking(ctx, i, c) {
   const date = V.date(i, 'date', { req: true });
   if (date < core.addDays(core.today(), -1) && !V.bool(i, 'backdated')) throw bad('date', 'تاريخ الحجز في الماضي', 'The booking date is in the past', 'date');
   const time = V.time(i, 'time', { req: true });
-  const pax = V.int(i, 'pax', { req: true, min: 1, max: 100 });
+  const vt = await vtypes.resolve(c, ctx, V.str(i, 'vehicleType', { req: true, max: 8 }));
+  // passengers are required for a type with seats; a cargo-only type (no seats) defaults to 1 (the driver's run)
+  let pax = V.int(i, 'pax', { min: 1, max: 120 });
+  if (pax == null) { if (vt.seats > 0) throw bad('required', 'عدد الركاب مطلوب', 'The number of passengers is required', 'pax'); pax = 1; }
+  const loadKg = V.num(i, 'loadKg', { gt: 0, max: 100000 });
+  if (loadKg != null && !(Number(vt.payload_kg) > 0)) throw bad('load', `نوع ${vt.code} مش للبضائع`, `Type ${vt.code} does not carry cargo`, 'loadKg');
   const pickup = V.str(i, 'pickup', { req: true, max: 12 }), destination = V.str(i, 'destination', { req: true, max: 12 });
   await place(c, pickup, 'pickup'); await place(c, destination, 'destination');
-  const vehicleType = V.oneOf(i, 'vehicleType', ['LB', 'MB', 'MC', 'SD'], { req: true });
+  const vehicleType = vt.code;
   const price = V.num(i, 'price', { req: true, min: 0 });
   const routeType = V.oneOf(i, 'routeType', ['airport', 'city', 'intercity', 'hire']);
   const ri = await routeInfo(c, pickup, destination, routeType);
@@ -167,7 +175,7 @@ async function createBooking(ctx, i, c) {
   const number = await core.nextNumber(c, ctx, 'BK', date);
   const b = await insert(c, 'bookings', {
     company_id: ctx.companyId, number, client_id: clientId, program_id: null, pax, date, time, pickup, destination, route_km: V.num(i, 'routeKm', { gt: 0, def: ri.km }), route_type: ri.type,
-    vehicle_type: vehicleType, price, paid: 0, status, flight: V.str(i, 'flight', { max: 12, re: /^[A-Za-z0-9 ]+$/ }), unassigned: true, notes: V.str(i, 'notes', { max: 1000, def: '' }),
+    vehicle_type: vehicleType, load_kg: loadKg, price, paid: 0, status, flight: V.str(i, 'flight', { max: 12, re: /^[A-Za-z0-9 ]+$/ }), unassigned: true, notes: V.str(i, 'notes', { max: 1000, def: '' }),
     created_by: ctx.user.name, external_ref: V.str(i, 'externalRef', { max: 80 }),
   });
   if (credit) await core.audit(c, ctx, 'approve', 'credit_limit', number, { field: 'exposure', before: credit.limit, after: credit.exposure });
@@ -186,11 +194,11 @@ define('booking.update', G.ops, async (ctx, i, c) => {
   const b = await core.lock(c, 'bookings', id, 'booking');
   if (['cancelled', 'done'].includes(b.status)) throw conflict('closed', 'الحجز منتهي أو ملغي', 'The booking is finished or cancelled');
   const trips = (await c.query("SELECT id, status FROM trips WHERE booking_id = $1 AND status <> 'cancelled'", [id])).rows;
-  const f = defined({ pax: P(i, 'pax', V.int, { min: 1, max: 100 }), price: P(i, 'price', V.num, { min: 0 }), flight: P(i, 'flight', V.str, { max: 12 }), notes: P(i, 'notes', V.str, { max: 1000, def: '' }), status: P(i, 'status', V.oneOf, ['tentative', 'confirmed']), time: P(i, 'time', V.time), date: P(i, 'date', V.date), vehicle_type: P(i, 'vehicleType', V.oneOf, ['LB', 'MB', 'MC', 'SD']) });
+  const f = defined({ pax: P(i, 'pax', V.int, { min: 1, max: 100 }), price: P(i, 'price', V.num, { min: 0 }), flight: P(i, 'flight', V.str, { max: 12 }), notes: P(i, 'notes', V.str, { max: 1000, def: '' }), status: P(i, 'status', V.oneOf, ['tentative', 'confirmed']), time: P(i, 'time', V.time), date: P(i, 'date', V.date), vehicle_type: has(i, 'vehicleType') ? (await vtypes.resolve(c, ctx, i.vehicleType)).code : undefined, load_kg: P(i, 'loadKg', V.num, { gt: 0, max: 100000 }) });
   if ((f.date || f.time || f.vehicle_type) && trips.length) throw conflict('assigned', 'الحجز متخصص له رحلة. ألغِ التخصيص أولاً لتغيير الموعد أو النوع.', 'The booking already has a trip. Unassign it first to change the date, time or type.');
   if (f.price != null && trips.length) await c.query("UPDATE trips SET revenue = $1 WHERE booking_id = $2 AND invoice_id IS NULL AND status <> 'cancelled'", [f.price, id]);
   if (f.pax != null && trips.length) {
-    const small = (await c.query("SELECT v.code, v.seats FROM trips t JOIN vehicles v ON v.id = t.vehicle_id WHERE t.booking_id = $1 AND t.status <> 'cancelled' AND v.seats < $2", [id, f.pax])).rows[0];
+    const small = (await c.query("SELECT v.code, v.seats FROM trips t JOIN vehicles v ON v.id = t.vehicle_id WHERE t.booking_id = $1 AND t.status <> 'cancelled' AND v.seats > 0 AND v.seats < $2", [id, f.pax])).rows[0];
     if (small) throw conflict('capacity', `المركبة ${small.code} سعتها ${small.seats} فقط`, `Vehicle ${small.code} only has ${small.seats} seats`);
     await c.query("UPDATE trips SET pax = $1 WHERE booking_id = $2 AND status <> 'cancelled'", [f.pax, id]);
   }
@@ -247,7 +255,7 @@ define('program.create', G.ops, async (ctx, i, c) => {
     const from = V.str(d, 'from', { req: true, max: 12 }), to = V.str(d, 'to', { req: true, max: 12 });
     const ri = await routeInfo(c, from, to);
     const km = V.num(d, 'km', { min: 0, def: ri.km });
-    const row = await insert(c, 'program_days', { company_id: ctx.companyId, program_id: prog.id, day: k + 1, date: core.addDays(start, k), from_code: from, to_code: to, km, time: V.time(d, 'time', { def: k === 0 ? '10:30' : '08:00' }), vehicle_type: V.oneOf(d, 'vehicleType', ['LB', 'MB', 'MC', 'SD'], { def: v ? v.type : 'LB' }) });
+    const row = await insert(c, 'program_days', { company_id: ctx.companyId, program_id: prog.id, day: k + 1, date: core.addDays(start, k), from_code: from, to_code: to, km, time: V.time(d, 'time', { def: k === 0 ? '10:30' : '08:00' }), vehicle_type: (await vtypes.resolve(c, ctx, d.vehicleType || (v ? v.type : 'LB'))).code });
     dayRows.push(Object.assign(row, { ri })); totalKm += km;
   }
   const bkNumber = await core.nextNumber(c, ctx, 'BK', start);
@@ -391,7 +399,7 @@ define('trip.update', G.ops, async (ctx, i, c) => {
   if (['completed', 'cancelled'].includes(t.status) && !has(i, 'revenue')) throw conflict('state', 'الرحلة منتهية أو ملغية', 'The trip is finished or cancelled');
   const f = defined({ flight: P(i, 'flight', V.str, { max: 12 }), flight_status: P(i, 'flightStatus', V.oneOf, ['ontime', 'delayed', 'landed', 'cancelled']), pax: P(i, 'pax', V.int, { min: 1, max: 100 }) });
   if (has(i, 'revenue')) { if (t.invoice_id) throw conflict('invoiced', 'الرحلة مفوترة، عدّل بإشعار دائن', 'The trip is invoiced; adjust it with a credit note'); f.revenue = V.num(i, 'revenue', { min: 0 }); }
-  if (f.pax) { const v = await core.mustExist(c, 'vehicles', t.vehicle_id); if (v.seats < f.pax) throw bad('pax', `سعة المركبة ${v.seats}`, `Vehicle capacity is ${v.seats}`, 'pax'); }
+  if (f.pax) { const v = await core.mustExist(c, 'vehicles', t.vehicle_id); if (v.seats > 0 && v.seats < f.pax) throw bad('pax', `سعة المركبة ${v.seats}`, `Vehicle capacity is ${v.seats}`, 'pax'); }
   if (has(i, 'driverId') || has(i, 'startTime')) {
     if (t.status !== 'scheduled') throw conflict('state', 'لا يمكن تغيير السائق أو الموعد بعد البدء', 'Driver or time cannot change after the trip started');
     const s = await core.settings(c, ctx);
@@ -462,7 +470,7 @@ define('subcontract.create', G.ops, async (ctx, i, c) => {
   const supplier = V.text2(i, 'supplier', { req: true, max: 160 }), driver = V.text2(i, 'driver', { max: 120 });
   const revenue = V.num(i, 'revenue', { req: true, min: 0 }), cost = V.num(i, 'cost', { req: true, min: 0 });
   const date = V.date(i, 'date', { def: b ? b.date : core.today() });
-  const s = await insert(c, 'subcontracts', { company_id: ctx.companyId, date, supplier_ar: supplier.ar, supplier_en: supplier.en, plate: V.str(i, 'plate', { req: true, max: 30 }), driver_ar: driver.ar, driver_en: driver.en, vehicle_type: V.oneOf(i, 'vehicleType', ['LB', 'MB', 'MC', 'SD'], { def: b ? b.vehicle_type : 'MC' }), revenue, cost, client_id: clientId, booking_id: bookingId, from_code: V.str(i, 'from', { max: 12, def: b ? b.pickup : '' }), to_code: V.str(i, 'to', { max: 12, def: b ? b.destination : '' }), created_by: ctx.user.name });
+  const s = await insert(c, 'subcontracts', { company_id: ctx.companyId, date, supplier_ar: supplier.ar, supplier_en: supplier.en, plate: V.str(i, 'plate', { req: true, max: 30 }), driver_ar: driver.ar, driver_en: driver.en, vehicle_type: (await vtypes.resolve(c, ctx, i.vehicleType || (b ? b.vehicle_type : null))).code, revenue, cost, client_id: clientId, booking_id: bookingId, from_code: V.str(i, 'from', { max: 12, def: b ? b.pickup : '' }), to_code: V.str(i, 'to', { max: 12, def: b ? b.destination : '' }), created_by: ctx.user.name });
   if (b) await c.query("UPDATE bookings SET unassigned = false, status = 'done' WHERE id = $1", [b.id]);
   if (cost > 0) await core.expense(c, ctx, { date, category: 'subcontract', amount: cost, method: 'payable', supplier: supplier.en, sourceType: 'subcontract', sourceId: s.id, sourceRef: s.id, desc: { ar: 'مركبة من الباطن ' + supplier.ar, en: 'Subcontracted vehicle ' + supplier.en } });
   await core.audit(c, ctx, 'create', 'subcontract', `${supplier.ar} ${b ? b.number : ''}`);

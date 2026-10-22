@@ -6,6 +6,7 @@ const core = require('../lib/core');
 const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound } = require('../lib/errors');
 const { CRITICAL_ITEMS, INSPECTION_ITEMS } = require('../lib/defaults');
+const vtypes = require('../lib/vehicletypes');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -35,7 +36,8 @@ function vehicleFields(i, t, isNew) {
     plate_ar: plate ? plate.ar : undefined, plate_en: plate ? plate.en : undefined,
     make: P(i, 'make', V.str, { max: 60, def: '' }), model: P(i, 'model', V.str, { max: 60, def: '' }),
     year: P(i, 'year', V.int, { min: 1980, max: 2100 }), chassis: P(i, 'chassis', V.str, { max: 40, def: '' }),
-    seats: P(i, 'seats', V.int, { min: 1, max: 100 }), fuel: P(i, 'fuel', V.oneOf, ['diesel', 'gasoline']),
+    seats: P(i, 'seats', V.int, { min: 0, max: 120 }), fuel: P(i, 'fuel', V.oneOf, ['diesel', 'gasoline', 'electric', 'hybrid', 'cng']),
+    payload_kg: P(i, 'payloadKg', V.num, { min: 0, max: 100000 }), volume_m3: P(i, 'volumeM3', V.num, { min: 0, max: 500 }),
     ownership: P(i, 'ownership', V.oneOf, ['owned', 'installment', 'leased']),
     purchase_date: P(i, 'purchaseDate', V.date), purchase_price: P(i, 'purchasePrice', V.num, { min: 0 }),
     salvage_value: P(i, 'salvageValue', V.num, { min: 0 }), life_years: P(i, 'lifeYears', V.num, { gt: 0, max: 40 }), life_km: P(i, 'lifeKm', V.int, { gt: 0 }),
@@ -50,7 +52,9 @@ function vehicleFields(i, t, isNew) {
     if (!f.plate_ar) throw bad('required', 'رقم اللوحة مطلوب', 'The plate number is required', 'plate');
     if (f.purchase_price == null) throw bad('required', 'سعر الشراء مطلوب', 'The purchase price is required', 'purchasePrice');
     if (!f.purchase_date) throw bad('required', 'تاريخ الشراء مطلوب', 'The purchase date is required', 'purchaseDate');
-    f.seats = f.seats || t.seats; f.fuel = f.fuel || t.fuel; f.life_years = f.life_years || t.life_years; f.life_km = f.life_km || t.life_km;
+    if (f.seats == null) f.seats = t.seats; if (f.payload_kg == null) f.payload_kg = Number(t.payload_kg) || 0; if (f.volume_m3 == null) f.volume_m3 = Number(t.volume_m3) || 0;
+    if (!(f.seats > 0) && !(f.payload_kg > 0)) throw bad('capacity', 'المركبة محتاجة عدد كراسي أو حمولة', 'The vehicle needs seats or a payload', 'seats');
+    f.fuel = f.fuel || t.fuel; f.life_years = f.life_years || t.life_years; f.life_km = f.life_km || t.life_km;
     f.salvage_value = f.salvage_value != null ? f.salvage_value : round2(f.purchase_price * t.salvage_pct);
     f.insurance_annual = f.insurance_annual != null ? f.insurance_annual : t.insurance; f.license_annual = f.license_annual != null ? f.license_annual : t.license;
     f.tank_l = f.tank_l || t.tank_l; f.year = f.year || parseInt(f.purchase_date.slice(0, 4), 10);
@@ -59,8 +63,8 @@ function vehicleFields(i, t, isNew) {
 }
 
 define('vehicle.create', G.fleet, async (ctx, i, c) => {
-  const type = V.oneOf(i, 'type', ['LB', 'MB', 'MC', 'SD'], { req: true });
-  const t = await vtype(c, type);
+  const t = await vtypes.resolve(c, ctx, V.str(i, 'type', { req: true, max: 8 }), 'type');
+  const type = t.code;
   const f = vehicleFields(i, t, true);
   if (f.salvage_value > f.purchase_price) throw bad('salvage', 'قيمة الخردة أكبر من سعر الشراء', 'Salvage value is higher than the purchase price', 'salvageValue');
   const odo = V.int(i, 'odometer', { min: 0, def: 0 });
@@ -89,6 +93,8 @@ define('vehicle.update', G.fleet, async (ctx, i, c) => {
     if (odo < old.odometer && !['company_admin', 'super_admin'].includes(ctx.user.role)) throw bad('odometer', `العداد لا يمكن أن يقل عن ${old.odometer} (تصحيح العداد لمدير النظام فقط)`, `The odometer cannot go below ${old.odometer} (only a company admin can correct it)`, 'odometer');
     f.odometer = odo;
   }
+  const seats = f.seats != null ? f.seats : old.seats, payload = f.payload_kg != null ? f.payload_kg : Number(old.payload_kg);
+  if (!(seats > 0) && !(payload > 0)) throw bad('capacity', 'المركبة محتاجة عدد كراسي أو حمولة', 'The vehicle needs seats or a payload', 'seats');
   const pp = f.purchase_price != null ? f.purchase_price : old.purchase_price, sv = f.salvage_value != null ? f.salvage_value : old.salvage_value;
   if (sv > pp) throw bad('salvage', 'قيمة الخردة أكبر من سعر الشراء', 'Salvage value is higher than the purchase price', 'salvageValue');
   if (f.status === 'active' && old.status === 'maintenance') {
