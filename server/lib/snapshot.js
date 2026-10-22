@@ -8,6 +8,7 @@
 const db = require('./db');
 const core = require('./core');
 const activities = require('./activities');
+const countries = require('./countries');
 
 const HISTORY_DAYS = parseInt(process.env.MOTUS_HISTORY_DAYS || '400', 10);
 const L = (r, f) => ({ ar: r[f + '_ar'] || r[f + '_en'] || '', en: r[f + '_en'] || r[f + '_ar'] || '' });
@@ -93,7 +94,7 @@ async function load(companyId) {
     const lines = await q('SELECT l.* FROM invoice_lines l JOIN invoices i ON i.id = l.invoice_id WHERE i.issue_date >= $1 OR i.status IN (\'issued\',\'partial\') ORDER BY l.line_no', [since]);
     D.invoices = (await q("SELECT * FROM invoices WHERE issue_date >= $1 OR status IN ('issued','partial') ORDER BY issue_date, number", [since])).map(r => Object.assign(base(r), {
       number: r.number, clientId: r.client_id, issueDate: r.issue_date, dueDate: r.due_date, currency: r.currency, rate: N(r.rate), subtotal: N(r.subtotal), discount: N(r.discount), tax: N(r.tax), total: N(r.total), paid: N(r.paid), status: r.status, source: r.source,
-      eInvoice: { uuid: r.einv_uuid, status: r.einv_status },
+      eInvoice: { uuid: r.einv_uuid, status: r.einv_status, provider: r.einv_provider },
       lines: lines.filter(l => l.invoice_id === r.id).map(l => ({ desc: L(l, 'description'), tripId: l.trip_id, programId: l.program_id, bookingId: l.booking_id, qty: N(l.qty), unit: N(l.unit), discount: N(l.discount), taxRate: N(l.tax_rate), total: N(l.total) })),
     }));
     D.creditNotes = (await q('SELECT * FROM credit_notes ORDER BY date')).map(r => Object.assign(base(r), { number: r.number, invoiceId: r.invoice_id, clientId: r.client_id, date: r.date, reason: L(r, 'reason'), subtotal: N(r.subtotal), tax: N(r.tax), total: N(r.total) }));
@@ -170,7 +171,7 @@ async function load(companyId) {
     return {
       activities: acts,
       version: Number(st.data_version), loadedAt: Date.now(), today,
-      company: { id: co.id, code: co.code, name: L(co, 'name'), taxNo: co.tax_no, currency: co.currency, fyStart: co.fy_start, status: co.status, createdAt: core.fmtTs(co.created_at).slice(0, 10) },
+      company: { id: co.id, code: co.code, name: L(co, 'name'), taxNo: co.tax_no, country: co.country, timezone: co.timezone, countryPack: countries.publicPack(co.country), countryLocked: (await q('SELECT 1 FROM invoices LIMIT 1')).length > 0, currency: co.currency, fyStart: co.fy_start, status: co.status, createdAt: core.fmtTs(co.created_at).slice(0, 10) },
       data: D,
     };
   });
@@ -192,6 +193,11 @@ function forRole(snap, role, userId) {
 
 /* cached per company; reused only while the data version is unchanged and the day has not rolled */
 async function get(companyId) {
+  // dates and times in the company's own time zone
+  const zone = (await db.platform(c => c.query('SELECT timezone FROM companies WHERE id = $1', [companyId]))).rows[0];
+  return core.withTz(zone && zone.timezone, () => getIn(companyId));
+}
+async function getIn(companyId) {
   const hit = cache.get(companyId);
   if (hit && hit.today === core.today() && hit.version === await version(companyId) && Date.now() - hit.loadedAt < 15 * 60000) return hit;
   const snap = await load(companyId);

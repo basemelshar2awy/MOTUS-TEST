@@ -8,6 +8,9 @@ async function seed(c) {
   const snapRes = (await c.get('/api/snapshot')).data;
   const snap0 = snapRes.data;
   const tourism = (snapRes.activities || ['tourism']).includes('tourism');
+  // places of the company's country (Egypt by default)
+  const sa = snapRes.company && snapRes.company.country === 'SA';
+  const P = sa ? { AP: 'RUHAP', A: 'RUH', B: 'JED' } : { AP: 'CAIAP', A: 'CAI', B: 'ALX' };
   const wh = snap0.warehouses[0].id;
   const drv = [];
   for (const [n, e] of [['أحمد حسن', 'Ahmed Hassan'], ['محمود سعيد', 'Mahmoud Saeed'], ['خالد يوسف', 'Khaled Youssef'], ['علي إبراهيم', 'Ali Ibrahim']]) drv.push((await ok('driver.create', { name: { ar: n, en: e }, phone: '0100000000' + drv.length, licenseExpiry: '2030-06-01', salary: 4500, employment: 'both', commission: 120 })).id);
@@ -23,7 +26,7 @@ async function seed(c) {
   for (const [n, e, t] of [['النيل للسياحة', 'Nile Tours', 'agency'], ['فندق الهرم', 'Pyramids Hotel', 'hotel'], ['شركة المستقبل', 'Future Co', 'company']]) cls.push((await ok('client.create', { name: { ar: n, en: e }, type: t, creditLimit: 800000, terms: 30, email: 'ap@x.test' })).id);
   const trips = [];
   for (let k = 0; k < 4; k++) {
-    const b = await ok('booking.create', { clientId: cls[k % 3], date: day(-3 + k), time: '09:00', pax: cargoOnly ? [undefined, undefined, undefined, 2][k] : [40, 20, 8, 3][k], loadKg: cargoOnly ? [12000, 5000, 1000, 600][k] : undefined, pickup: 'CAIAP', destination: 'CAI', vehicleType: types[k][0], price: 800 + k * 400, backdated: true });
+    const b = await ok('booking.create', { clientId: cls[k % 3], date: day(-3 + k), time: '09:00', pax: cargoOnly ? [undefined, undefined, undefined, 2][k] : [40, 20, 8, 3][k], loadKg: cargoOnly ? [12000, 5000, 1000, 600][k] : undefined, pickup: P.AP, destination: P.A, vehicleType: types[k][0], price: 800 + k * 400, backdated: true });
     const t = await ok('booking.assign', { bookingId: b.id, vehicleId: veh[k] });
     trips.push({ id: t.id, client: cls[k % 3] });
   }
@@ -31,8 +34,8 @@ async function seed(c) {
   await ok('trip.start', { id: trips[1].id }); await ok('trip.complete', { id: trips[1].id, endKm: 20045 });
   const inv = await ok('invoice.fromTrips', { clientId: trips[0].client, tripIds: [trips[0].id] });
   await ok('payment.create', { clientId: trips[0].client, amount: 500, method: 'cash' });
-  await ok('booking.create', cargoOnly ? { clientId: cls[0], date: day(3), time: '10:00', loadKg: 4000, pickup: 'CAI', destination: 'ALX', vehicleType: 'TM', price: 3500 } : { clientId: cls[0], date: day(3), time: '10:00', pax: 20, pickup: 'CAI', destination: 'ALX', vehicleType: 'MB', price: 3500 });
-  if (tourism) await ok('program.create', { name: { ar: 'برنامج القاهرة والإسكندرية', en: 'Cairo & Alexandria' }, clientId: cls[1], start: day(7), pax: 12, price: 24000, vehicleId: veh[2], driverId: drv[2], days: [{ from: 'CAIAP', to: 'CAI' }, { from: 'CAI', to: 'ALX' }, { from: 'ALX', to: 'CAI' }] });
+  await ok('booking.create', cargoOnly ? { clientId: cls[0], date: day(3), time: '10:00', loadKg: 4000, pickup: P.A, destination: P.B, vehicleType: 'TM', price: 3500 } : { clientId: cls[0], date: day(3), time: '10:00', pax: 20, pickup: P.A, destination: P.B, vehicleType: 'MB', price: 3500 });
+  if (tourism) await ok('program.create', { name: { ar: 'برنامج القاهرة والإسكندرية', en: 'Cairo & Alexandria' }, clientId: cls[1], start: day(7), pax: 12, price: 24000, vehicleId: veh[2], driverId: drv[2], days: [{ from: P.AP, to: P.A }, { from: P.A, to: P.B }, { from: P.B, to: P.A }] });
   const sup = await ok('supplier.create', { name: { ar: 'مورد القطع', en: 'Parts Supplier' } });
   const item = await ok('item.create', { name: { ar: 'فلتر زيت', en: 'Oil filter' }, category: 'filters', unit: 'pc', cost: 120, minQty: 5 });
   await ok('stock.receipt', { warehouseId: wh, lines: [{ itemId: item.id, qty: 8, unitCost: 120 }] });

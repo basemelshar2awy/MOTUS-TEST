@@ -7,6 +7,7 @@ const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound } = require('../lib/errors');
 const { CRITICAL_ITEMS, INSPECTION_ITEMS } = require('../lib/defaults');
 const vtypes = require('../lib/vehicletypes');
+const countries = require('../lib/countries');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -115,14 +116,22 @@ function driverFields(i) {
   return defined({
     name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined,
     phone: P(i, 'phone', V.str, { max: 30, def: '' }), national_id: P(i, 'nationalId', V.str, { max: 20, def: '', re: /^[0-9A-Za-z-]*$/ }),
-    license_no: P(i, 'licenseNo', V.str, { max: 30, def: '' }), license_class: P(i, 'licenseClass', V.oneOf, ['first', 'second', 'third', 'professional']),
+    license_no: P(i, 'licenseNo', V.str, { max: 30, def: '' }), license_class: P(i, 'licenseClass', V.str, { max: 20 }),
     license_expiry: P(i, 'licenseExpiry', V.date), employment: P(i, 'employment', V.oneOf, ['salary', 'commission', 'both']),
     salary: P(i, 'salary', V.num, { min: 0 }), commission: P(i, 'commission', V.num, { min: 0 }),
     status: P(i, 'status', V.oneOf, ['active', 'inactive']), branch_id: P(i, 'branchId', V.uuid), hired_at: P(i, 'hiredAt', V.date),
   });
 }
+/* identity fields follow the company's country (format of the ID, license classes) */
+async function countryChecks(c, ctx, f, isNew) {
+  const country = (await core.company(c, ctx)).country;
+  countries.check(country, 'nationalId', f.national_id, 'nationalId');
+  if (f.license_class != null) countries.checkLicense(country, f.license_class);
+  else if (isNew) f.license_class = countries.pack(country).defaultLicense;
+}
 define('driver.create', G.ops, async (ctx, i, c) => {
   const f = driverFields(i);
+  await countryChecks(c, ctx, f, true);
   if (!f.name_ar) throw bad('required', 'اسم السائق مطلوب', 'The driver name is required', 'name');
   if (!f.license_expiry) throw bad('required', 'تاريخ انتهاء الرخصة مطلوب', 'The license expiry date is required', 'licenseExpiry');
   let code = V.str(i, 'code', { max: 20 });
@@ -140,6 +149,7 @@ define('driver.update', G.ops, async (ctx, i, c) => {
   const id = V.uuid(i, 'id', { req: true });
   const old = await core.lock(c, 'drivers', id, 'driver');
   const f = driverFields(i);
+  await countryChecks(c, ctx, f, false);
   if (has(i, 'externalRef')) f.external_ref = V.str(i, 'externalRef', { max: 80 });
   await update(c, 'drivers', id, f);
   if (has(i, 'vehicleId')) {

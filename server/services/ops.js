@@ -7,6 +7,7 @@ const core = require('../lib/core');
 const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound, AppError } = require('../lib/errors');
 const vtypes = require('../lib/vehicletypes');
+const countries = require('../lib/countries');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -26,8 +27,14 @@ function clientFields(i) {
     status: P(i, 'status', V.oneOf, ['active', 'inactive']), external_ref: P(i, 'externalRef', V.str, { max: 80 }),
   });
 }
+async function clientCountryChecks(c, ctx, f) {
+  const country = (await core.company(c, ctx)).country;
+  countries.check(country, 'taxNo', f.tax_no, 'taxNo'); countries.check(country, 'crNo', f.cr_no, 'crNo');
+}
 async function createClient(ctx, i, c) {
   const f = clientFields(i);
+  await clientCountryChecks(c, ctx, f);
+  if (!f.currency) f.currency = (await core.company(c, ctx)).currency;
   if (!f.name_ar) throw bad('required', 'اسم العميل مطلوب', 'The client name is required', 'name');
   f.type = f.type || 'company';
   let code = V.str(i, 'code', { max: 20 });
@@ -41,7 +48,7 @@ async function createClient(ctx, i, c) {
 define('client.create', G.opsFin, createClient);
 define('client.update', G.opsFin, async (ctx, i, c) => {
   const id = V.uuid(i, 'id', { req: true }); const old = await core.lock(c, 'clients', id, 'client');
-  const f = clientFields(i); await update(c, 'clients', id, f);
+  const f = clientFields(i); await clientCountryChecks(c, ctx, f); await update(c, 'clients', id, f);
   await core.audit(c, ctx, 'update', 'client', old.code, { field: Object.keys(f).join(', ') });
 });
 

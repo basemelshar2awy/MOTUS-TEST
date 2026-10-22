@@ -44,13 +44,13 @@ async function run(ctx, name, input) {
   if (!ctx.user || !allowed(ctx.user.role, def)) throw forbidden();
   if (!ctx.companyId) throw new AppError(400, 'no_company', 'اختر شركة أولاً', 'Select a company first');
   try {
-    const out = await db.tx(ctx.companyId, async c => {
+    const out = await db.tx(ctx.companyId, async c => core.withTz((await core.company(c, ctx)).timezone, async () => {
       // activity check: an action (or an input field) of an activity the company does not have is refused here
       const gated = await activities.gate(c, ctx, name, def, input || {});
       const res = await def.handler(ctx, gated, c);
       if (!def.opts.readOnly && !def.opts.noTouch) await core.touch(c, ctx);
       return res;
-    });
+    }));
     if (!def.opts.readOnly && !def.opts.noTouch) onChange(ctx.companyId);
     return out === undefined ? { ok: true } : out;
   } catch (e) {

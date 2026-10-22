@@ -40,7 +40,10 @@ M.n0 = v => (v == null || isNaN(v)) ? '—' : nf0.format(Math.round(v));
 M.n1 = v => (v == null || isNaN(v)) ? '—' : nf1.format(v);
 M.n2 = v => (v == null || isNaN(v)) ? '—' : nf2.format(v);
 M.currency = 'EGP';
-M.cur = () => M.currency === 'EGP' ? (M.lang === 'ar' ? 'ج.م' : 'EGP') : M.currency;
+M.cur = () => M.currency === 'EGP' ? (M.lang === 'ar' ? 'ج.م' : 'EGP') : M.currency === 'SAR' ? (M.lang === 'ar' ? 'ر.س' : 'SAR') : M.currency;
+/* the company's country pack (labels, formats, license classes); Egypt until a snapshot arrives */
+M.pack = null;
+M.field = (k, fallback) => { const f = M.pack && M.pack.fields[k]; return f ? f : { label: { ar: fallback[0], en: fallback[1] }, placeholder: '', hint: null, pattern: null }; };
 M.money = v => (v == null || isNaN(v)) ? '—' : `${nf0.format(Math.round(v))} ${M.cur()}`;
 M.moneyK = v => { if (v == null || isNaN(v)) return '—'; const a = Math.abs(v); const s = a >= 1e6 ? nf2.format(v / 1e6) + (M.lang === 'ar' ? ' مليون' : 'M') : a >= 1e4 ? nf0.format(v / 1e3) + (M.lang === 'ar' ? ' ألف' : 'K') : nf0.format(v); return `${s} ${M.cur()}`; };
 M.pct = (v, d = 1) => (v == null || isNaN(v) || !isFinite(v)) ? '—' : `${(v * 100).toFixed(d)}%`;
@@ -86,6 +89,7 @@ M.applySnapshot = snap => {
   M.activities = snap.activities || [];
   M.activityCatalog = snap.activityCatalog || [];
   M.currency = snap.company.currency || 'EGP';
+  M.pack = snap.company.countryPack || null;
   M.db = {}; M.db[cid] = D;
   M.vehicleClasses = {};
   D.vehicleTypes.forEach(t => { M.vehicleClasses[t.code] = t; });
