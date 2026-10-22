@@ -9,7 +9,8 @@ const H = require('./helpers');
 let env, adm, ids = {}, key;
 const ok = async (p, msg) => { const r = await p; assert.ok(r.status === 200 || r.status === 201, (msg || '') + ' -> ' + r.status + ' ' + JSON.stringify(r.data)); return r.data; };
 const status = async (p, code, msg) => { const r = await p; assert.equal(r.status, code, (msg || '') + ' -> ' + JSON.stringify(r.data)); return r.data; };
-const day = n => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+// dates in the company's own time zone (Cairo), as the server counts them
+const day = n => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date(Date.now() + n * 86400000));
 const api = async (method, p, body) => { const r = await fetch(env.base + p, { method, headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, data: await r.json() }; };
 
 before(async () => {
@@ -125,4 +126,28 @@ test('ending a contract releases the vehicles; contracts are company data', asyn
   const c = new Client({ host: env.SU.host, port: env.SU.port, user: env.app, password: require('fs').readFileSync(env.cfgFile, 'utf8').match(/MOTUS_DB_APP_PASSWORD=(.+)/)[1], database: env.dbName });
   await c.connect();
   try { assert.equal((await c.query('SELECT count(*)::int n FROM contracts')).rows[0].n, 0); } finally { await c.end(); }
+});
+
+test('kilometres: open by default, or an allowance per vehicle per cycle / per trip with extra km billed', async () => {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+  const d1 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 5)).toISOString().slice(0, 10);
+  const d2 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 20)).toISOString().slice(0, 10);
+  await status(adm.do('contract.create', { clientId: ids.school, name: 'No rate', pricing: 'per_period', rate: 20000, startDate: start, kmAllowance: 1000, vehicles: [{ vehicleId: ids.v3 }] }), 400, 'a limit needs an extra-km rate');
+  const k = await ok(adm.do('contract.create', { clientId: ids.school, name: 'Monthly with 1000 km', pricing: 'per_period', rate: 20000, cycle: 'month', withDriver: false, startDate: start, kmAllowance: 1000, kmBasis: 'cycle', extraKmRate: 3, vehicles: [{ vehicleId: ids.v3 }] }));
+  await ok(adm.do('contract.trip', { contractId: k.id, vehicleId: ids.v3, date: d1, startTime: '08:00', endTime: '18:00', km: 500 }));
+  await ok(adm.do('contract.trip', { contractId: k.id, vehicleId: ids.v3, date: d2, startTime: '08:00', endTime: '18:00', km: 800 }));
+  const inv = await ok(adm.do('contract.bill', { id: k.id }));
+  const lines = (await env.sql('SELECT qty, unit FROM invoice_lines WHERE invoice_id = $1 ORDER BY unit', [inv.id])).rows.map(l => [Number(l.qty), Number(l.unit)]);
+  assert.deepEqual(lines, [[300, 3], [1, 20000]], '300 km over the 1000 allowed');
+  await status(adm.do('contract.trip', { contractId: k.id, vehicleId: ids.v3, date: d2, startTime: '19:00', endTime: '20:00', km: 50 }), 409, 'km in a billed period cannot be added later');
+  // per trip: 40 km allowed per trip
+  const k2 = await ok(adm.do('contract.create', { clientId: ids.school, name: 'Shuttle 40 km', pricing: 'per_trip', rate: 400, startDate: day(-10), kmAllowance: 40, kmBasis: 'trip', extraKmRate: 5, vehicles: [{ vehicleId: ids.v3 }] }));
+  await ok(adm.do('contract.trip', { contractId: k2.id, vehicleId: ids.v3, date: day(-2), startTime: '08:00', endTime: '09:00', km: 55 }));
+  await ok(adm.do('contract.trip', { contractId: k2.id, vehicleId: ids.v3, date: day(-2), startTime: '10:00', endTime: '11:00', km: 30 }));
+  const inv2 = await ok(adm.do('contract.bill', { id: k2.id, to: day(-1) }));
+  const l2 = (await env.sql('SELECT qty, unit FROM invoice_lines WHERE invoice_id = $1 ORDER BY unit', [inv2.id])).rows.map(l => [Number(l.qty), Number(l.unit)]);
+  assert.deepEqual(l2, [[2, 400], [15, 5]].sort((a, b) => a[1] - b[1]), '2 trips + 15 km over on the first');
+  // open kilometres (the earlier contracts) never add a km line
+  assert.equal((await env.sql("SELECT count(*)::int n FROM invoice_lines WHERE contract_id = ANY($1::uuid[]) AND description_en LIKE '%extra kilometres%'", [[ids.k1, ids.k2]])).rows[0].n, 0);
 });

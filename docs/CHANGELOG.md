@@ -5,6 +5,8 @@
 - Every trip says where it came from (MOTUS / Sabeel module / outside system) and, for contract work, which contract; trips list filter and trip page show it.
 - An exclusive contract keeps its vehicles (and drivers, when with driver) out of other bookings in its hours only; extra work outside them is allowed.
 - Billing: per-trip contracts bill confirmed trips × rate; per-period contracts bill vehicles × cycles, a vehicle that joined or left mid-cycle pays its share of days. Each period is billed once, on the new "Revenue – operating contracts" account (4106).
+- Kilometres: open (no limit) or an allowance per vehicle per cycle or per trip, with a rate for each extra kilometre billed with the cycle; a vehicle on the contract for part of a cycle gets the same share of the allowance as of the price. Reported km are locked once a period is billed.
+- Extra work of contract vehicles outside the contract is a normal booking priced on its own at its time; the contract page lists it.
 - Screens: Operations → Operating contracts (list, contract page, new contract, confirm trip, bill, add/remove vehicle, end).
 - Migration `008_contracts.sql`.
 

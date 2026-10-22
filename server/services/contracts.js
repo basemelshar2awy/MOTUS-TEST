@@ -50,6 +50,11 @@ function fields(i, isNew) {
   }
   if (isNew || i.workStart != null) f.work_start = V.time(i, 'workStart', { def: '00:00' });
   if (isNew || i.workEnd != null) f.work_end = V.time(i, 'workEnd', { def: '23:59' });
+  // kilometres: empty allowance = open (no limit)
+  if (isNew || i.kmAllowance !== undefined) f.km_allowance = i.kmAllowance === '' || i.kmAllowance == null ? null : V.int(i, 'kmAllowance', { min: 0, max: 10000000 });
+  if (isNew || i.kmBasis != null) f.km_basis = V.oneOf(i, 'kmBasis', ['cycle', 'trip'], { def: 'cycle' });
+  if (isNew || i.extraKmRate != null) f.extra_km_rate = V.num(i, 'extraKmRate', { min: 0, max: 100000, def: 0 });
+  if (f.km_allowance != null && !(f.extra_km_rate > 0) && isNew) throw bad('extraKmRate', 'حدد سعر الكيلو الزيادة لما يكون فيه حد للكيلومترات', 'Set the extra-km rate when kilometres are limited', 'extraKmRate');
   if (isNew || i.startDate != null) f.start_date = V.date(i, 'startDate', { req: isNew });
   if (isNew || i.endDate !== undefined) f.end_date = V.date(i, 'endDate');
   const terms = V.text2(i, 'terms', { max: 4000 }); if (terms.ar) { f.terms_ar = terms.ar; f.terms_en = terms.en; }
@@ -139,7 +144,7 @@ define('contract.trip', CONFIRM, async (ctx, i, c) => {
   if (date > core.today()) throw bad('date', 'الرحلة لسه ماحصلتش — التأكيد بيكون بعد ما الرحلة تخلص', 'The trip has not happened yet — confirm trips after they finish', 'date');
   if (date < k.start_date || (k.end_date && date > k.end_date)) throw bad('date', `التاريخ خارج مدة العقد ${k.number}`, `The date is outside contract ${k.number}`, 'date');
   if (k.status === 'cancelled') throw conflict('state', 'العقد ملغي', 'The contract is cancelled');
-  if (k.billed_to && date <= k.billed_to && k.pricing === 'per_trip') throw conflict('billed', `الفترة لحد ${k.billed_to} اتفوترت بالفعل`, `The period up to ${k.billed_to} is already billed`);
+  if (k.billed_to && date <= k.billed_to && (k.pricing === 'per_trip' || k.km_allowance != null)) throw conflict('billed', `الفترة لحد ${k.billed_to} اتفوترت بالفعل`, `The period up to ${k.billed_to} is already billed`);
   const vehicleId = V.uuid(i, 'vehicleId', { req: true });
   const cv = (await c.query('SELECT * FROM contract_vehicles WHERE contract_id = $1 AND vehicle_id = $2 AND from_date <= $3 AND (to_date IS NULL OR to_date >= $3) LIMIT 1', [k.id, vehicleId, date])).rows[0];
   if (!cv) throw bad('vehicleId', 'المركبة مش على العقد في التاريخ ده', 'The vehicle is not on the contract on that date', 'vehicleId');
@@ -162,6 +167,30 @@ define('contract.trip', CONFIRM, async (ctx, i, c) => {
   await core.emit(c, ctx, 'trip.completed', { id: t.id, number, contract: k.number, vehicleId, date, revenue, source });
   return { id: t.id, number, revenue };
 });
+
+/* kilometres beyond the allowance in [from, to], per vehicle and cycle. A vehicle that is on the
+   contract for part of a cycle gets the same share of the cycle allowance as of the price. */
+async function kmLines(c, k, from, to) {
+  if (k.km_allowance == null || !(Number(k.extra_km_rate) > 0)) return [];
+  const cvs = (await c.query('SELECT cv.*, v.code FROM contract_vehicles cv JOIN vehicles v ON v.id = cv.vehicle_id WHERE cv.contract_id = $1 ORDER BY v.code, cv.from_date', [k.id])).rows;
+  const trips = (await c.query("SELECT vehicle_id, date, km FROM trips WHERE contract_id = $1 AND status = 'completed' AND date BETWEEN $2 AND $3", [k.id, from, to])).rows;
+  const out = [];
+  for (let a = from; a <= to;) {
+    const full = cycleEnd(k.cycle, a), b = full < to ? full : to, cycleDays = daysBetween(a, full) + 1;
+    for (const cv of cvs) {
+      const s = cv.from_date > a ? cv.from_date : a, e = cv.to_date && cv.to_date < b ? cv.to_date : b;
+      if (s > e) continue;
+      const mine = trips.filter(t => t.vehicle_id === cv.vehicle_id && t.date >= s && t.date <= e);
+      const used = mine.reduce((x, t) => x + (t.km || 0), 0);
+      let allowed, extra;
+      if (k.km_basis === 'trip') { allowed = k.km_allowance; extra = mine.reduce((x, t) => x + Math.max(0, (t.km || 0) - k.km_allowance), 0); }
+      else { allowed = Math.round(k.km_allowance * (daysBetween(s, e) + 1) / cycleDays); extra = Math.max(0, used - allowed); }
+      if (extra > 0) out.push({ ar: `عقد ${k.number} · مركبة ${cv.code} · كيلومترات زيادة: ${extra} كم (المسموح ${allowed} كم ${k.km_basis === 'trip' ? 'للرحلة' : 'في الفترة'}، المستخدم ${used} كم) · من ${s} إلى ${e}`, en: `Contract ${k.number} · vehicle ${cv.code} · extra kilometres: ${extra} km (allowed ${allowed} km ${k.km_basis === 'trip' ? 'per trip' : 'in the period'}, used ${used} km) · ${s} to ${e}`, qty: extra, unit: Number(k.extra_km_rate), revKey: 'revenue_contract', contractId: k.id, periodFrom: s, periodTo: e });
+    }
+    a = core.addDays(b, 1);
+  }
+  return out;
+}
 
 /* bill a finished cycle (or up to a date when the contract ends early) */
 define('contract.bill', ['company_admin', 'fleet_manager', 'accountant'], async (ctx, i, c) => {
@@ -203,6 +232,7 @@ define('contract.bill', ['company_admin', 'fleet_manager', 'accountant'], async 
       a = core.addDays(b, 1);
     }
   }
+  lines.push(...await kmLines(c, k, from, to));
   if (!lines.length || !lines.some(l => l.qty * l.unit > 0)) throw conflict('nothing', 'مفيش حاجة تتفوتر في الفترة دي', 'Nothing to bill for this period');
   const inv = await createInvoice(c, ctx, client, lines.filter(l => l.qty > 0), { issueDate: core.today(), source: 'contract' });
   if (tripIds.length) await c.query('UPDATE trips SET invoice_id = $1 WHERE id = ANY($2::uuid[])', [inv.id, tripIds]);

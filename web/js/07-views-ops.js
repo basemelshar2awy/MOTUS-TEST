@@ -641,10 +641,12 @@
     return kDay(M.iso(nx), -1);
   };
   const kNext = k => { const from = k.billedTo ? kDay(k.billedTo, 1) : k.startDate; let to = kCycleEnd(k.cycle, from); if (k.endDate && to > k.endDate) to = k.endDate; return { from, to, due: to < M.TODAY, done: !!(k.endDate && from > k.endDate) }; };
+  const kUsed = (k, vid, n) => U.db().trips.filter(t => t.contractId === k.id && t.vehicleId === vid && t.status === 'completed' && t.date >= n.from && t.date <= n.to).reduce((x, t) => x + (t.km || 0), 0);
   const kVehicles = (k, all) => U.db().contractVehicles.filter(x => x.contractId === k.id && (all || !x.to || x.to >= M.TODAY));
   const kStatus = k => k.status === 'active' ? U.badge(tt('ساري', 'Active'), 'success') : k.status === 'ended' ? U.badge(tt('منتهي', 'Ended'), 'muted') : U.badge(tt('ملغي', 'Cancelled'), 'muted');
   const kPrice = k => `${M.money(k.rate)} ${k.pricing === 'per_trip' ? tt('للرحلة', 'per trip') : tt('لكل مركبة / ', 'per vehicle / ') + tt(...K_CYCLE[k.cycle])}`;
   const kHours = k => k.exclusive ? `${tt('حصري', 'Exclusive')} <span class="num">${k.workStart}–${k.workEnd}</span>` : tt('يسمح بشغل إضافي', 'Allows extra work');
+  const kKm = k => k.kmAllowance == null ? tt('مفتوحة (بدون حد)', 'Open (no limit)') : `${M.n0(k.kmAllowance)} ${tt('كم', 'km')} ${k.kmBasis === 'trip' ? tt('للرحلة', 'per trip') : tt('لكل مركبة في الدورة', 'per vehicle per cycle')} · ${M.money(k.extraKmRate)} ${tt('للكيلو الزيادة', 'per extra km')}`;
   const kCan = () => ['super_admin', 'company_admin', 'fleet_manager', 'operations', 'accountant'].includes(M.state.role);
 
   U.route('contracts', () => {
@@ -661,6 +663,7 @@
         { label: tt('التشغيل من', 'Run from'), value: k => k.channel, render: k => `${tt(...K_CH[k.channel])}${k.externalSystem ? `<div class="cell-sub">${M.esc(k.externalSystem)}</div>` : ''}` },
         { label: tt('التسعير', 'Pricing'), value: k => k.rate, render: k => kPrice(k) },
         { label: tt('السائق', 'Driver'), value: k => k.withDriver, render: k => k.withDriver ? tt('بسائق', 'With driver') : tt('بدون سائق', 'Without driver') },
+        { label: tt('الكيلومترات', 'Kilometres'), value: k => k.kmAllowance == null ? -1 : k.kmAllowance, render: k => k.kmAllowance == null ? tt('مفتوحة', 'Open') : `${M.n0(k.kmAllowance)} ${tt('كم', 'km')} / ${k.kmBasis === 'trip' ? tt('رحلة', 'trip') : tt('دورة', 'cycle')}` },
         { label: tt('الحصرية', 'Exclusivity'), value: k => k.exclusive, render: k => kHours(k) },
         { label: tt('مركبات', 'Vehicles'), num: 1, value: k => kVehicles(k).length },
         { label: tt('الفوترة', 'Billing'), value: k => kNext(k).from, render: k => { const n = kNext(k); return k.status !== 'active' && n.done ? tt('مكتملة', 'Complete') : `${tt('الدورة', 'Cycle')} <span class="num">${M.date(n.from)} → ${M.date(n.to)}</span>${n.due ? ' ' + U.badge(tt('مستحقة', 'Due'), 'warning') : ''}`; } },
@@ -677,12 +680,14 @@
     const acts = can ? `${U.btn(tt('تأكيد رحلة تمت', 'Confirm a finished trip'), 'k-trip', '', 'check', `data-id="${k.id}"`)} ${['super_admin', 'company_admin', 'fleet_manager', 'accountant'].includes(M.state.role) ? U.btn(tt('فوترة الدورة', 'Bill the cycle'), 'k-bill', 'secondary', 'receipt', `data-id="${k.id}"`) : ''} ${U.btn(tt('إضافة مركبة', 'Add vehicle'), 'k-addv', 'secondary', 'plus', `data-id="${k.id}"`)} ${U.btn(tt('إنهاء العقد', 'End contract'), 'k-end', 'ghost', '', `data-id="${k.id}"`)}` : kStatus(k);
     const invs = db.invoices.filter(i => i.lines && i.lines.some(l => l.contractId === k.id || trips.some(t => t.id === l.tripId)));
     const rev = trips.filter(t => t.status === 'completed').reduce((x, t) => x + (t.revenue || 0), 0);
+    // the contract vehicles' other work during the contract: priced on its own, outside the contract
+    const extra = db.trips.filter(t => !t.contractId && t.status !== 'cancelled' && cvs.some(x => x.vehicleId === t.vehicleId && t.date >= x.from && (!x.to || t.date <= x.to))).sort((a, b) => (a.date < b.date ? 1 : -1));
     return U.head(`${k.number} · ${M.esc(M.L(k.name))}`, `${M.esc(M.L(cl.name))} · ${kPrice(k)}`, acts, [[tt('عقود التشغيل', 'Operating contracts'), 'contracts'], [k.number]]) +
       U.kpis([U.kpi(tt('المركبات الحالية', 'Vehicles now'), kVehicles(k).length), U.kpi(tt('رحلات مؤكدة', 'Confirmed trips'), trips.length, tt('آخر 90 يوم في الشاشة', 'last 90 days on screen')), U.kpi(k.pricing === 'per_trip' ? tt('إيراد الرحلات', 'Trip revenue') : tt('سعر الدورة لكل مركبة', 'Cycle price per vehicle'), M.money(k.pricing === 'per_trip' ? rev : k.rate)), U.kpi(tt('الدورة الحالية', 'Current cycle'), `<span class="num" style="font-size:16px">${M.date(n.from)} → ${M.date(n.to)}</span>`, n.due ? tt('خلصت ومستحقة الفوترة', 'Ended, due for billing') : tt('لسه شغالة', 'Still running'))]) +
       `<div class="cols-2">` + U.card(tt('شروط العقد', 'Contract terms'), U.dl([
         [tt('العميل', 'Client'), `<a href="#client.${cl.id}">${M.esc(M.L(cl.name))}</a>`],
         [tt('التشغيل والتأكيد من', 'Run and confirmed from'), `${tt(...K_CH[k.channel])}${k.externalSystem ? ' · ' + M.esc(k.externalSystem) : ''}`],
-        [tt('التسعير', 'Pricing'), kPrice(k)], [tt('دورة الفوترة', 'Billing cycle'), tt(...K_CYCLE[k.cycle])],
+        [tt('التسعير', 'Pricing'), kPrice(k)], [tt('دورة الفوترة', 'Billing cycle'), tt(...K_CYCLE[k.cycle])], [tt('الكيلومترات', 'Kilometres'), kKm(k)],
         [tt('السائق', 'Driver'), k.withDriver ? tt('بسائق الشركة', "With the company's driver") : tt('بدون سائق (العميل بيسوق)', 'Without driver (the client drives)')],
         [tt('الحصرية', 'Exclusivity'), `${kHours(k)}<div class="muted small">${k.workDays.length === 7 ? tt('كل الأيام', 'Every day') : k.workDays.map(d => tt(...K_DAYS[d])).join('، ')}</div>`],
         [tt('المدة', 'Period'), `${M.date(k.startDate)} → ${k.endDate ? M.date(k.endDate) : tt('مفتوح', 'open-ended')}`],
@@ -693,6 +698,7 @@
         { label: tt('المركبة', 'Vehicle'), value: x => U.find('vehicles', x.vehicleId).code, render: x => `<a href="#vehicle.${x.vehicleId}">${U.find('vehicles', x.vehicleId).code}</a> <span class="muted small">${M.esc(M.L(U.find('vehicles', x.vehicleId).plate || ''))}</span>` },
         { label: tt('السائق', 'Driver'), value: x => x.driverId ? M.L(U.find('drivers', x.driverId).name) : '—' },
         { label: tt('من', 'From'), value: x => x.from, render: x => M.date(x.from) }, { label: tt('إلى', 'To'), value: x => x.to || '', render: x => x.to ? M.date(x.to) : tt('مستمرة', 'ongoing') },
+        { label: tt('كم الدورة الحالية', 'km this cycle'), num: 1, value: x => kUsed(k, x.vehicleId, n), render: x => { const u = kUsed(k, x.vehicleId, n); return k.kmAllowance != null && k.kmBasis === 'cycle' ? `${M.n0(u)} / ${M.n0(k.kmAllowance)}${u > k.kmAllowance ? ' ' + U.badge(tt('زيادة', 'Over'), 'warning') : ''}` : M.n0(u); } },
         { label: '', sort: false, render: x => can && (!x.to || x.to >= M.TODAY) ? `<button class="btn ghost sm" data-act="k-remv" data-k="${k.id}" data-v="${x.vehicleId}">${tt('شيل من العقد', 'Take off')}</button>` : '' },
       ] }), { flush: true }) + `</div><div style="height:16px"></div>` +
       U.card(tt('الرحلات المؤكدة', 'Confirmed trips'), U.table({ id: 'k-trips', rows: trips, pageSize: 10, emptyTitle: tt('مفيش رحلات اتأكدت لسه', 'No trips confirmed yet'), emptyText: tt('النظام اللي بيشغّل العقد بيبعت كل رحلة بعد ما تخلص (POST /api/v1/contracts/{id}/trips)، أو أكدها من هنا.', 'The system running the contract sends each trip once finished (POST /api/v1/contracts/{id}/trips), or confirm it here.'), columns: [
@@ -704,6 +710,12 @@
         { label: tt('الإيراد', 'Revenue'), num: 1, value: t => t.revenue, render: t => k.pricing === 'per_trip' ? M.money(t.revenue) : `<span class="muted small">${tt('ضمن سعر الدورة', 'in the cycle price')}</span>` },
         { label: tt('الفوترة', 'Billing'), value: t => t.invoiced, render: t => t.invoiced ? U.badge(tt('مفوترة', 'Invoiced'), 'success') : k.pricing === 'per_trip' ? U.badge(tt('في الدورة الجاية', 'Next cycle'), 'muted') : '—' },
       ] })) +
+      (extra.length ? '<div style="height:16px"></div>' + U.card(tt('شغل إضافي بره العقد', 'Extra work outside the contract'), U.table({ id: 'k-extra', rows: extra, pageSize: 6, export: false, columns: [
+        { label: tt('الرحلة', 'Trip'), value: t => t.number, render: t => `<a href="#trip.${t.id}">${t.number}</a>` },
+        { label: tt('التاريخ', 'Date'), value: t => t.date + t.startTime, render: t => `${M.date(t.date)} <span class="num muted">${t.startTime}–${t.endTime}</span>` },
+        { label: tt('المركبة', 'Vehicle'), value: t => U.find('vehicles', t.vehicleId).code }, { label: tt('العميل', 'Client'), value: t => M.L(U.find('clients', t.clientId).name) },
+        { label: tt('السعر', 'Price'), num: 1, value: t => t.revenue, render: t => M.money(t.revenue) }, { label: tt('الحالة', 'Status'), value: t => t.status, render: t => U.status(t.status) },
+      ] }), { hint: tt('كل شغل إضافي بيتسعّر لوحده كحجز عادي وقته، ومش داخل في سعر العقد ولا فاتورته.', 'Each extra job is priced on its own as a normal booking at its time; it is not part of the contract price or invoice.') }) : '') +
       (invs.length ? '<div style="height:16px"></div>' + U.card(tt('فواتير العقد', 'Contract invoices'), invs.map(i => `<div class="list-row"><div class="grow"><a href="#invoice.${i.id}">${i.number}</a> · ${M.date(i.issueDate)}</div><div>${M.money(i.total)}</div></div>`).join('')) : '');
   });
 
@@ -719,13 +731,16 @@
       { f: 'pricing', label: tt('التسعير', 'Pricing'), type: 'select', value: 'per_trip', options: [['per_trip', tt('بالرحلة', 'Per trip')], ['per_period', tt('بالمدة (لكل مركبة)', 'Per period (per vehicle)')]] },
       { f: 'rate', label: tt('السعر', 'Rate'), type: 'number', req: true },
       { f: 'cycle', label: tt('الدورة (فوترة / مدة)', 'Cycle (billing / period)'), type: 'select', value: 'month', options: Object.entries(K_CYCLE).map(([kk, v]) => [kk, tt(...v)]) },
+      { f: 'kmAllowance', label: tt('الكيلومترات المسموحة (فاضي = مفتوحة)', 'Kilometres included (empty = open)'), type: 'number' },
+      { f: 'kmBasis', label: tt('الحد ده', 'This limit is'), type: 'select', value: 'cycle', options: [['cycle', tt('لكل مركبة في الدورة', 'per vehicle per cycle')], ['trip', tt('لكل رحلة', 'per trip')]] },
+      { f: 'extraKmRate', label: tt('سعر الكيلو الزيادة', 'Extra km rate'), type: 'number' },
       { f: 'startDate', label: tt('بداية العقد', 'Start date'), type: 'date', value: M.TODAY, req: true }, { f: 'endDate', label: tt('نهاية العقد (اختياري)', 'End date (optional)'), type: 'date' },
       { f: 'withDriver', label: tt('بسائق الشركة (كل مركبة بسواقها)', "With the company's driver (each vehicle with its driver)"), type: 'checkbox', value: true },
       { f: 'exclusive', label: tt('حصري في ساعات العمل (المركبة مش هتاخد شغل تاني فيها)', 'Exclusive in working hours (no other work then)'), type: 'checkbox', value: false },
       { f: 'workStart', label: tt('ساعات العمل من', 'Working hours from'), type: 'time', value: '06:00' }, { f: 'workEnd', label: tt('إلى', 'to'), type: 'time', value: '16:00' },
       { f: 'vh', label: tt('المركبات', 'Vehicles'), type: 'html', full: true, html: `<div class="check-grid">${vs.map(v => `<label class="check"><input type="checkbox" data-f="v_${v.id}"> ${M.esc(v.code)} <span class="muted small">${M.esc(U.vtypeName ? U.vtypeName(v.type) : v.type)}</span></label>`).join('')}</div>` },
-      { f: 'terms', label: tt('شروط إضافية', 'Additional terms'), type: 'textarea', full: true, value: tt('المشغّل (الشركة) يتحمل الصيانة والوقود والزيوت. يسمح للمركبة بشغل إضافي خارج ساعات العقد.', 'The operator (the company) bears maintenance, fuel and oils. The vehicle may do extra work outside the contract hours.') },
-    ], 'contract.create', { map: d => ({ clientId: d.clientId, name: d.name, channel: d.channel, externalSystem: d.externalSystem || '', pricing: d.pricing, rate: d.rate, cycle: d.cycle, startDate: d.startDate, endDate: d.endDate || undefined, withDriver: !!d.withDriver, exclusive: !!d.exclusive, workStart: d.workStart, workEnd: d.workEnd, terms: d.terms || undefined, vehicles: Object.keys(d).filter(x => x.startsWith('v_') && d[x]).map(x => ({ vehicleId: x.slice(2) })) }),
+      { f: 'terms', label: tt('شروط إضافية', 'Additional terms'), type: 'textarea', full: true, value: tt('المشغّل (الشركة) يتحمل الصيانة والوقود والزيوت. يسمح للمركبة بشغل إضافي خارج ساعات العقد، وكل شغل إضافي بيتسعّر لوحده وقته.', 'The operator (the company) bears maintenance, fuel and oils. The vehicle may do extra work outside the contract hours; each extra job is priced on its own at its time.') },
+    ], 'contract.create', { map: d => ({ clientId: d.clientId, name: d.name, channel: d.channel, externalSystem: d.externalSystem || '', pricing: d.pricing, rate: d.rate, cycle: d.cycle, startDate: d.startDate, endDate: d.endDate || undefined, withDriver: !!d.withDriver, exclusive: !!d.exclusive, kmAllowance: d.kmAllowance == null ? null : d.kmAllowance, kmBasis: d.kmBasis, extraKmRate: d.extraKmRate || 0, workStart: d.workStart, workEnd: d.workEnd, terms: d.terms || undefined, vehicles: Object.keys(d).filter(x => x.startsWith('v_') && d[x]).map(x => ({ vehicleId: x.slice(2) })) }),
       after: r => { if (r && r.id) U.go('contract', r.id); }, ok: tt('تم إنشاء العقد', 'Contract created') });
   });
   U.act('k-trip', el => {
@@ -743,7 +758,7 @@
     const to = n.due ? n.to : kDay(M.TODAY, -1);
     U.formModal(tt('فوترة العقد', 'Bill the contract') + ' · ' + k.number, [
       { f: 'to', label: tt('لحد تاريخ', 'Up to'), type: 'date', value: to, req: true, help: n.due ? tt(`الدورة ${n.from} → ${n.to} خلصت.`, `Cycle ${n.from} → ${n.to} has ended.`) : tt('الدورة الحالية لسه ماخلصتش؛ الفوترة لحد امبارح بتتحسب بنسبة الأيام.', 'The current cycle has not ended; billing up to yesterday is prorated by days.') },
-    ], 'contract.bill', { map: d => ({ id: k.id, to: d.to }), intro: `<p class="muted small">${k.pricing === 'per_trip' ? tt('كل الرحلات المؤكدة اللي لسه ماتفوترتش لحد التاريخ ده × سعر الرحلة.', 'Every confirmed trip not yet invoiced up to that date × the trip rate.') : tt('كل مركبة × عدد الدورات (المركبة اللي دخلت أو خرجت في نص الدورة بتدفع نسبة أيامها).', 'Each vehicle × the number of cycles (a vehicle that joined or left mid-cycle pays its share of days).')}</p>`, ok: r => tt(`تم إصدار الفاتورة ${r.number}`, `Invoice ${r.number} issued`), submit: tt('إصدار الفاتورة', 'Issue invoice') });
+    ], 'contract.bill', { map: d => ({ id: k.id, to: d.to }), intro: `<p class="muted small">${k.pricing === 'per_trip' ? tt('كل الرحلات المؤكدة اللي لسه ماتفوترتش لحد التاريخ ده × سعر الرحلة.', 'Every confirmed trip not yet invoiced up to that date × the trip rate.') : tt('كل مركبة × عدد الدورات (المركبة اللي دخلت أو خرجت في نص الدورة بتدفع نسبة أيامها).', 'Each vehicle × the number of cycles (a vehicle that joined or left mid-cycle pays its share of days).')}${k.kmAllowance != null ? ' ' + tt('+ الكيلومترات الزيادة عن المسموح × سعر الكيلو.', '+ kilometres beyond the allowance × the extra-km rate.') : ''}</p>`, ok: r => tt(`تم إصدار الفاتورة ${r.number}`, `Invoice ${r.number} issued`), submit: tt('إصدار الفاتورة', 'Issue invoice') });
   });
   U.act('k-addv', el => {
     const k = U.find('contracts', el.dataset.id); const db = U.db();

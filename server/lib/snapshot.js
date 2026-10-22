@@ -172,7 +172,7 @@ async function load(companyId) {
     D.contracts = (await q('SELECT * FROM contracts ORDER BY start_date DESC, number DESC')).map(r => Object.assign(base(r), {
       number: r.number, clientId: r.client_id, name: L(r, 'name'), channel: r.channel, externalSystem: r.external_system, pricing: r.pricing, rate: N(r.rate), cycle: r.cycle,
       withDriver: r.with_driver, exclusive: r.exclusive, workDays: (r.work_days || []).map(Number), workStart: r.work_start, workEnd: r.work_end, startDate: r.start_date, endDate: r.end_date,
-      billedTo: r.billed_to, status: r.status, terms: L(r, 'terms') }));
+      kmAllowance: r.km_allowance, kmBasis: r.km_basis, extraKmRate: N(r.extra_km_rate), billedTo: r.billed_to, status: r.status, terms: L(r, 'terms') }));
     D.contractVehicles = (await q('SELECT * FROM contract_vehicles ORDER BY from_date')).map(r => ({ id: r.id, contractId: r.contract_id, vehicleId: r.vehicle_id, driverId: r.driver_id, from: r.from_date, to: r.to_date }));
     D.calendar = {
       vehicles: (await calQ('vehicle_commitments', 'vehicle_id')).map(r => Object.assign({ vehicleId: r.owner_id }, cal(r))),

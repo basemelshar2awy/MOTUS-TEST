@@ -24,6 +24,11 @@ CREATE TABLE contracts (
   work_start text NOT NULL DEFAULT '00:00' CHECK (work_start ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
   work_end text NOT NULL DEFAULT '23:59' CHECK (work_end ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
   start_date date NOT NULL, end_date date,
+  -- kilometres included: empty = open (no limit); otherwise per vehicle per cycle, or per trip;
+  -- what goes beyond is billed at extra_km_rate
+  km_allowance integer CHECK (km_allowance IS NULL OR km_allowance >= 0),
+  km_basis text NOT NULL DEFAULT 'cycle' CHECK (km_basis IN ('cycle','trip')),
+  extra_km_rate numeric(10,2) NOT NULL DEFAULT 0 CHECK (extra_km_rate >= 0),
   billed_to date,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended','cancelled')),
   terms_ar text NOT NULL DEFAULT '', terms_en text NOT NULL DEFAULT '',
