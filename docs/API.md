@@ -18,6 +18,12 @@ Base: `https://motus.sabeelbus.com/api/v1/` — `Authorization: Bearer mk_live_�
 - Inbound webhooks: `POST /api/webhooks/providers/{id}` with header `X-Motus-Signature: t=<unix>,v1=<hex hmac-sha256(secret, t.body)>` (5-minute tolerance).
 
 
+## Mobile apps (same routes as the browser, Bearer token)
+- `POST /api/login` with `"client": "mobile"` answers `{ token, expiresInDays }` and sets no cookie. Every later call sends `Authorization: Bearer <token>` and `X-Requested-With: motus`; the routes are the browser's (`/api/session`, `/api/snapshot`, `/api/do/<action>`, `/api/live`, …). App sessions last 30 days and end after 14 days unused (`MOTUS_MOBILE_SESSION_DAYS`, `MOTUS_MOBILE_IDLE_DAYS`). An app token is refused as a cookie and a browser cookie is refused as a Bearer token.
+- `GET /api/mobile/home?period=mtd|last` — the dashboard's headline figures, six-month series, top alerts and the next trips, computed by the dashboard's own calculation code. `GET /api/mobile/alerts` — every alert.
+- `POST /api/mobile/link` `{ route }` → `{ path }` — a one-time link (60 s, used once) that opens a dashboard screen inside the app: `GET /m/open?code=…` becomes a short browser session tied to the app's session and redirects to `/?embed=1#<route>` (web menus hidden). Signing out of the app ends it.
+- `POST /api/mobile/devices` `{ platform: android|ios|huawei, pushToken, app?, lang?, appVersion?, model? }` registers the phone for push; `DELETE /api/mobile/devices` removes this session's phone. Push goes through Firebase (Android, iPhone) or Huawei Push Kit, configured on the server (`MOTUS_FCM_SERVICE_ACCOUNT`, `MOTUS_HMS_APP_ID`, `MOTUS_HMS_CLIENT_SECRET`).
+
 ## Browser session (one account, several companies)
 - `POST /api/login` — `{ "login": "<email or mobile>", "password" }` (`email` still accepted). Answers `companies` / `invites` counts; signs in to the company used last.
 - `GET /api/session` — `user` (role in the current company, `driverId` for drivers), `company`, `companies` (each with the role there), `invites`.
