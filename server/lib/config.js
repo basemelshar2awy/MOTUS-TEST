@@ -57,6 +57,19 @@ function load() {
     },
     sessionHours: parseInt(get('MOTUS_SESSION_HOURS', '12'), 10),
     sessionIdleMinutes: parseInt(get('MOTUS_SESSION_IDLE_MINUTES', '120'), 10),
+    // mobile apps: a phone stays signed in longer than a browser (still ends when unused)
+    mobileSessionDays: parseInt(get('MOTUS_MOBILE_SESSION_DAYS', '30'), 10),
+    mobileIdleDays: parseInt(get('MOTUS_MOBILE_IDLE_DAYS', '14'), 10),
+    // push notifications: Firebase (Android, iPhone) and Huawei Push Kit; off until configured
+    push: {
+      fcmServiceAccount: get('MOTUS_FCM_SERVICE_ACCOUNT', ''),       // path to the Firebase service-account JSON
+      hmsAppId: get('MOTUS_HMS_APP_ID', ''),
+      hmsClientSecret: get('MOTUS_HMS_CLIENT_SECRET', ''),
+      fcmUrl: get('MOTUS_FCM_URL', 'https://fcm.googleapis.com'),
+      googleTokenUrl: get('MOTUS_GOOGLE_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
+      hmsUrl: get('MOTUS_HMS_URL', 'https://push-api.cloud.huawei.com'),
+      hmsTokenUrl: get('MOTUS_HMS_TOKEN_URL', 'https://oauth-login.cloud.huawei.com/oauth2/v3/token'),
+    },
     credentialsKey: get('MOTUS_CREDENTIALS_KEY', ''),
     maxUploadBytes: parseInt(get('MOTUS_MAX_UPLOAD_BYTES', String(10 * 1024 * 1024)), 10),
     webhookWorker: get('MOTUS_WEBHOOK_WORKER', '1') === '1',

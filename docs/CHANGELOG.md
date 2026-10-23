@@ -1,4 +1,10 @@
 # Changelog
+## Unreleased — MOTUS mobile apps (step 8)
+- `mobile/admin`: the MOTUS admin app in Flutter — one codebase built for Android (Google Play), Huawei phones (AppGallery, Huawei Push Kit) and iPhone. Native home (the dashboard's figures), alerts, dispatch board with assignment, bookings / shipments / lines following the company's activities, new booking or shipment with the one-time delivery code, trips (start, finish with the code, cancel, trip order / waybill), lines with next week's runs, vehicles, live map, work orders, invoices and payments. Every other dashboard screen opens inside the app, signed in, from the More menu (role and activity aware, generated from the web menu).
+- Server: app sign-in with a Bearer token (`client: mobile`, 30-day sessions), `/api/mobile/home` and `/api/mobile/alerts` from the dashboard's own calculation code (`lib/webcalc.js`), one-time links for in-app web screens (`/m/open`, `?embed=1` hides the web menus), device registration and push notifications through Firebase and Huawei Push Kit (`lib/push.js`, off until configured).
+- GitHub workflow `mobile.yml`: analyze, tests, Android and Huawei APKs on the `mobile-latest` release, unsigned iPhone build.
+- Migration `010_mobile.sql`.
+
 ## 1.1.0-preview.2 — activity separation (step 7)
 - Every booking, trip and contract belongs to one activity (tourism, education, staff, intercity, cargo). Its trip types, fields, places, client types, documents, revenue account, reports and driver screen follow that activity (`server/lib/profiles.js`). A company with one activity never sees an activity choice; a company with several picks the activity first and the form changes with it.
 - The server enforces it, not only the screens: weight and shipment fields only on cargo, passengers/headcount only on the others, flight number only on tourism, trip types and client types from the activity's own list — on create and on edit, from the screens and the Open API.

@@ -14,20 +14,21 @@ const COOKIE = 'motus_sid';
 let CFG = null;
 const init = cfg => { CFG = cfg; };
 
-async function lookup(token) {
+/* kinds: 'web' (browser cookie), 'mobile' (app, Bearer token), 'embed' (a web screen shown inside the app) */
+async function lookup(token, want = ['web', 'embed']) {
   if (!token || token.length < 30 || token.length > 100) return null;
   const hash = auth.sha256(token);
   const r = await db.platform(c => c.query(`
-    SELECT s.id sid, s.company_id sc, s.expires_at, s.last_seen_at, u.id, u.email, u.phone, u.name_ar, u.name_en, u.role, u.status, u.must_change_password, u.lang,
+    SELECT s.id sid, s.company_id sc, s.expires_at, s.last_seen_at, s.kind, u.id, u.email, u.phone, u.name_ar, u.name_en, u.role, u.status, u.must_change_password, u.lang,
            co.status co_status, m.role m_role, m.status m_status, m.driver_id, m.branch_id
       FROM sessions s JOIN users u ON u.id = s.user_id
       LEFT JOIN companies co ON co.id = s.company_id
       LEFT JOIN LATERAL (SELECT * FROM user_memberships(u.id) x WHERE x.company_id = s.company_id) m ON u.role <> 'super_admin'
      WHERE s.token_hash = $1`, [hash]));
   const s = r.rows[0];
-  if (!s) return null;
+  if (!s || !want.includes(s.kind)) return null;
   const now = Date.now();
-  const idleMs = CFG.sessionIdleMinutes * 60000;
+  const idleMs = s.kind === 'mobile' ? CFG.mobileIdleDays * 86400000 : CFG.sessionIdleMinutes * 60000;
   if (new Date(s.expires_at).getTime() < now || new Date(s.last_seen_at).getTime() + idleMs < now || s.status !== 'active' || (s.sc && s.co_status !== 'active')) {
     await db.platform(c => c.query('DELETE FROM sessions WHERE id = $1', [s.sid]));
     return null;
@@ -40,7 +41,7 @@ async function lookup(token) {
     role = companyId ? s.m_role : 'member';
   }
   return {
-    sessionId: s.sid, id: s.id, email: s.email, phone: s.phone, login: s.email || s.phone, name: s.name_en || s.name_ar, nameAr: s.name_ar, role, lang: s.lang,
+    sessionId: s.sid, kind: s.kind, id: s.id, email: s.email, phone: s.phone, login: s.email || s.phone, name: s.name_en || s.name_ar, nameAr: s.name_ar, role, lang: s.lang,
     companyId, driverId: companyId ? s.driver_id : null, branchId: companyId ? s.branch_id : null, member: s.role !== 'super_admin', mustChange: s.must_change_password,
   };
 }
@@ -56,6 +57,8 @@ async function login(req, res, body, ip) {
   if (!email || !password) throw bad('required', 'اكتب البريد الإلكتروني أو رقم الموبايل وكلمة المرور', 'Enter your email or mobile number and password');
   const fail = new AppError(401, 'bad_login', 'بيانات الدخول أو كلمة المرور غير صحيحة', 'Incorrect sign-in details or password');
   const phone = email.includes('@') ? null : countries.normalizePhone(email);
+  // the apps keep the token themselves (Authorization: Bearer); the browser gets an HttpOnly cookie
+  const mobile = body.client === 'mobile';
   const out = await db.platform(async c => {
     if (await recentFailures(c, 'ip', ip) >= 30) throw new AppError(429, 'ip_blocked', 'محاولات كثيرة من هذا الجهاز. حاول بعد 15 دقيقة.', 'Too many attempts from this address. Try again in 15 minutes.');
     const u = (await c.query(phone ? 'SELECT * FROM users WHERE phone = $1' : 'SELECT * FROM users WHERE email = $1', [phone || email])).rows[0];
@@ -90,18 +93,18 @@ async function login(req, res, body, ip) {
     }
     await c.query('INSERT INTO login_attempts (email, ip, success) VALUES ($1,$2,true)', [email, ip]);
     await c.query('UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = now() WHERE id = $1', [u.id]);
-    await c.query("DELETE FROM sessions WHERE expires_at < now() OR (user_id = $1 AND last_seen_at < now() - interval '1 day')", [u.id]);
+    await c.query("DELETE FROM sessions WHERE expires_at < now() OR (user_id = $1 AND kind <> 'mobile' AND last_seen_at < now() - interval '1 day')", [u.id]);
     await c.query("DELETE FROM login_attempts WHERE at < now() - interval '30 days'");
     if (companyId && u.role !== 'super_admin') await c.query('UPDATE users SET last_company_id = $1 WHERE id = $2', [companyId, u.id]);
     const token = auth.newToken();
-    await c.query('INSERT INTO sessions (token_hash, user_id, company_id, expires_at, ip, user_agent) VALUES ($1,$2,$3, now() + make_interval(hours => $4), $5, $6)',
-      [auth.sha256(token), u.id, companyId, CFG.sessionHours, ip, String(req.headers['user-agent'] || '').slice(0, 300)]);
+    await c.query('INSERT INTO sessions (token_hash, user_id, company_id, expires_at, ip, user_agent, kind) VALUES ($1,$2,$3, now() + make_interval(hours => $4), $5, $6, $7)',
+      [auth.sha256(token), u.id, companyId, mobile ? CFG.mobileSessionDays * 24 : CFG.sessionHours, ip, String(req.headers['user-agent'] || '').slice(0, 300), mobile ? 'mobile' : 'web']);
     return { token, user: u, companies: ms.filter(m => m.status === 'active' && m.company_status === 'active').length, invites: ms.filter(m => m.status === 'invited' && m.company_status === 'active').length };
   });
   if (out.error) throw out.error;
-  setCookie(res, COOKIE, out.token, { secure: CFG.secureCookies, maxAge: CFG.sessionHours * 3600 });
-  log.info('login', { login: email, role: out.user.role, ip });
-  return { ok: true, mustChangePassword: out.user.must_change_password, companies: out.companies, invites: out.invites };
+  if (!mobile) setCookie(res, COOKIE, out.token, { secure: CFG.secureCookies, maxAge: CFG.sessionHours * 3600 });
+  log.info('login', { login: email, role: out.user.role, ip, client: mobile ? 'mobile' : 'web' });
+  return Object.assign({ ok: true, mustChangePassword: out.user.must_change_password, companies: out.companies, invites: out.invites }, mobile ? { token: out.token, expiresInDays: CFG.mobileSessionDays } : {});
 }
 
 async function logout(res, user) {
@@ -117,13 +120,15 @@ async function changePassword(user, body, res) {
   auth.checkPolicy(next, u.email);
   const hash = await auth.hashPassword(next);
   const token = auth.newToken();
+  const mobile = user.kind === 'mobile';
   await db.platform(async c => {
     await c.query('UPDATE users SET password_hash = $1, must_change_password = false, password_changed_at = now() WHERE id = $2', [hash, user.id]);
     await c.query('DELETE FROM sessions WHERE user_id = $1', [user.id]);   // sign out every other device
-    await c.query('INSERT INTO sessions (token_hash, user_id, company_id, expires_at) VALUES ($1,$2,$3, now() + make_interval(hours => $4))', [auth.sha256(token), user.id, user.companyId, CFG.sessionHours]);
+    await c.query('INSERT INTO sessions (token_hash, user_id, company_id, expires_at, kind) VALUES ($1,$2,$3, now() + make_interval(hours => $4), $5)', [auth.sha256(token), user.id, user.companyId, mobile ? CFG.mobileSessionDays * 24 : CFG.sessionHours, mobile ? 'mobile' : 'web']);
   });
-  setCookie(res, COOKIE, token, { secure: CFG.secureCookies, maxAge: CFG.sessionHours * 3600 });
+  if (!mobile) setCookie(res, COOKIE, token, { secure: CFG.secureCookies, maxAge: CFG.sessionHours * 3600 });
   log.info('password changed', { user: user.login });
+  return mobile ? { token } : {};
 }
 
 /* the Sabeel team can open any active company; a member only the companies it is an active member of */
@@ -162,4 +167,31 @@ async function setLang(user, lang) {
   await db.platform(c => c.query('UPDATE users SET lang = $1 WHERE id = $2', [lang, user.id]));
 }
 
-module.exports = { init, COOKIE, lookup, login, logout, changePassword, switchCompany, answerInvite, setLang };
+/* a web screen shown inside the app: the app asks for a one-time link (60 s), the in-app browser opens
+   it and gets its own short cookie session ('embed'), tied to the app's session — no long-lived token in a URL */
+async function mobileLink(user, route) {
+  if (user.kind !== 'mobile') throw new AppError(403, 'forbidden', 'للتطبيق بس', 'For the app only');
+  route = String(route || 'dashboard');
+  if (!/^[A-Za-z0-9._-]{1,120}$/.test(route)) throw bad('route', 'شاشة غير صحيحة', 'Invalid screen');
+  const code = auth.newToken();
+  await db.platform(c => c.query("INSERT INTO mobile_links (code_hash, session_id, route, expires_at) VALUES ($1,$2,$3, now() + interval '60 seconds')", [auth.sha256(code), user.sessionId, route]));
+  return { path: `/m/open?code=${code}` };
+}
+async function openLink(res, code) {
+  if (!code || code.length < 30 || code.length > 100) return null;
+  return db.platform(async c => {
+    const l = (await c.query("UPDATE mobile_links SET used_at = now() WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING session_id, route", [auth.sha256(code)])).rows[0];
+    if (!l) return null;
+    const p = (await c.query("SELECT user_id, company_id FROM sessions WHERE id = $1 AND kind = 'mobile' AND expires_at > now()", [l.session_id])).rows[0];
+    if (!p) return null;
+    const token = auth.newToken();
+    await c.query("INSERT INTO sessions (token_hash, user_id, company_id, expires_at, kind, parent_id) VALUES ($1,$2,$3, now() + make_interval(hours => $4), 'embed', $5)", [auth.sha256(token), p.user_id, p.company_id, CFG.sessionHours, l.session_id]);
+    await c.query("DELETE FROM mobile_links WHERE expires_at < now() - interval '1 hour'");
+    setCookie(res, COOKIE, token, { secure: CFG.secureCookies, maxAge: CFG.sessionHours * 3600 });
+    return l.route;
+  });
+}
+/* switching company in the app also moves the screens it has open from the web */
+async function syncEmbeds(user) { if (user.kind === 'mobile') await db.platform(c => c.query('UPDATE sessions SET company_id = (SELECT company_id FROM sessions WHERE id = $1) WHERE parent_id = $1', [user.sessionId])); }
+
+module.exports = { init, COOKIE, lookup, login, logout, changePassword, switchCompany, answerInvite, setLang, mobileLink, openLink, syncEmbeds };

@@ -74,6 +74,7 @@ async function audit(c, ctx, action, entity, recordRef, change) {
 
 /* ---------- outbound webhook events (queued in the same transaction) ---------- */
 async function emit(c, ctx, event, data) {
+  await require('./push').enqueue(c, ctx, event, data);   // app notifications for the events that have one
   const hooks = await c.query("SELECT id FROM webhooks WHERE status = 'active' AND $1 = ANY(events)", [event]);
   if (!hooks.rows.length) return;
   const payload = { id: crypto.randomUUID(), event, companyId: ctx.companyId, occurredAt: new Date().toISOString(), data };

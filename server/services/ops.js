@@ -193,7 +193,7 @@ async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
   });
   await c.query("UPDATE bookings SET unassigned = false, status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [b.id]);
   await core.audit(c, ctx, 'create', 'trip', `${number} ← ${b.number}`, { field: 'vehicle', before: '', after: `${v.code} / ${d.code}` });
-  await core.emit(c, ctx, 'trip.assigned', { id: t.id, number, bookingNumber: b.number, date: b.date, time: b.time, vehicle: v.code, plate: v.plate_ar, driver: d.name_en, driverPhone: d.phone });
+  await core.emit(c, ctx, 'trip.assigned', { id: t.id, number, bookingNumber: b.number, date: b.date, time: b.time, vehicle: v.code, plate: v.plate_ar, driver: d.name_en, driverPhone: d.phone, driverId: d.id });
   return t;
 }
 
@@ -528,7 +528,7 @@ define('trip.cancel', G.ops, async (ctx, i, c) => {
     else await c.query("UPDATE bookings SET status = 'cancelled', unassigned = false, cancel_reason_ar = $1, cancel_reason_en = $2 WHERE id = $3 AND NOT EXISTS (SELECT 1 FROM trips WHERE booking_id = $3 AND status <> 'cancelled')", [reason.ar, reason.en, t.booking_id]);
   }
   await core.audit(c, ctx, 'update', 'trip', t.number, { field: 'status', before: 'scheduled', after: reassign ? 'unassigned' : 'cancelled' });
-  await core.emit(c, ctx, 'trip.cancelled', { id: t.id, number: t.number, reason: reason.en, reassign });
+  await core.emit(c, ctx, 'trip.cancelled', { id: t.id, number: t.number, reason: reason.en, reassign, driverId: t.driver_id });
 });
 
 define('trip.update', G.ops, async (ctx, i, c) => {
