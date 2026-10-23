@@ -1,0 +1,15 @@
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+pubspec.lock
+# store credentials never go in the repository
+android/key.properties
+android/app/google-services.json
+android/app/agconnect-services.json
+ios/Runner/GoogleService-Info.plist
+*.jks
+*.keystore
