@@ -207,6 +207,11 @@ async function bookingActivity(c, ctx, i) {
   return a;
 }
 /* internal: set only by other services (lines), never from a request: { lineId, lineLeg, contractId, revenue } */
+/* a shipment's delivery deadline comes after its loading time (both optional) */
+function deadlineCheck(date, time, dd, dt) {
+  if (dt && !dd) throw bad('deliverDate', 'حدد تاريخ التسليم مع الميعاد', 'Give the delivery date with the time', 'deliverDate');
+  if (dd && (dd < date || (dd === date && dt && dt <= time))) throw bad('deliverDate', 'موعد التسليم لازم يكون بعد التحميل', 'The delivery deadline must be after loading', 'deliverDate');
+}
 async function createBooking(ctx, i, c, internal = {}) {
   const clientId = V.uuid(i, 'clientId', { req: true });
   const client = await core.mustExist(c, 'clients', clientId, 'client');
@@ -220,16 +225,25 @@ async function createBooking(ctx, i, c, internal = {}) {
   const prof = profiles.PROFILES[act];
   const cargo = act === 'cargo';
   let pax = 1, loadKg = null, ship = {};
-  if (cargo) {
+  // an empty return carries nothing: no goods, no weight, no delivery code
+  const emptyRun = cargo && i.tripType === 'empty_return';
+  if (emptyRun) {
+    for (const k of ['loadKg', 'goods', 'pieces', 'volumeM3', 'deliverDate', 'deliverTime']) if (i[k] != null && i[k] !== '' && i[k] !== 0) throw bad('load', 'العودة الفاضية من غير حمولة', 'An empty return carries no load', k);
+    if (!(Number(vt.payload_kg) > 0)) throw bad('load', `نوع ${vt.code} مش للبضائع`, `Type ${vt.code} does not carry cargo`, 'vehicleType');
+  } else if (cargo) {
     loadKg = V.num(i, 'loadKg', { req: true, gt: 0, max: 100000 });
     if (!(Number(vt.payload_kg) > 0)) throw bad('load', `نوع ${vt.code} مش للبضائع`, `Type ${vt.code} does not carry cargo`, 'vehicleType');
     const flags = V.arr(i, 'cargoFlags', { max: 3 }).map(x => V.oneOf({ x }, 'x', Object.keys(profiles.CARGO_FLAGS), { req: true }));
-    ship = { goods: V.str(i, 'goods', { req: true, max: 160 }), pieces: V.int(i, 'pieces', { min: 1, max: 100000 }), volume_m3: V.num(i, 'volumeM3', { gt: 0, max: 1000 }), cargo_flags: [...new Set(flags)] };
+    ship = { goods: V.str(i, 'goods', { req: true, max: 160 }), pieces: V.int(i, 'pieces', { min: 1, max: 100000 }), volume_m3: V.num(i, 'volumeM3', { gt: 0, max: 1000 }), cargo_flags: [...new Set(flags)],
+      deliver_date: V.date(i, 'deliverDate'), deliver_time: V.time(i, 'deliverTime') };
   } else {
     pax = V.int(i, 'pax', { min: 1, max: 1000 });
     if (pax == null) throw bad('required', `${prof.load.label.ar} مطلوب`, `${prof.load.label.en} is required`, 'pax');
     if (i.loadKg != null && i.loadKg !== '') throw bad('load', 'الوزن للشحنات بس', 'Weight is for shipments only', 'loadKg');
   }
+  if (act !== 'tourism' && i.flight) throw bad('flight', 'رقم الطيران للسياحة بس', 'The flight number is for tourism only', 'flight');
+  if (cargo && !emptyRun) deadlineCheck(date, time, ship.deliver_date, ship.deliver_time);
+  else for (const k of ['goods', 'pieces', 'volumeM3', 'cargoFlags', 'deliverDate', 'deliverTime']) if (i[k] != null && i[k] !== '' && !(Array.isArray(i[k]) && !i[k].length)) throw bad('load', 'بيانات الشحنة للبضائع بس', 'Shipment details are for cargo only', k);
   const tripType = V.oneOf(i, 'tripType', Object.keys(prof.tripTypes), { def: null });
   const pickup = V.str(i, 'pickup', { req: true, max: 12 }), destination = V.str(i, 'destination', { req: true, max: 12 });
   await place(c, pickup, 'pickup'); await place(c, destination, 'destination');
@@ -243,7 +257,7 @@ async function createBooking(ctx, i, c, internal = {}) {
   const credit = await creditCheck(c, ctx, client, price, V.bool(i, 'overrideCredit'));
   const number = await core.nextNumber(c, ctx, cargo ? 'SH' : 'BK', date);
   // a shipment's delivery code: shown once to whoever created it (the shipper, or Sabeel Naql over the API); only its hash is kept
-  const code = cargo ? String(require('crypto').randomInt(0, 1000000)).padStart(6, '0') : null;
+  const code = cargo && !emptyRun ? String(require('crypto').randomInt(0, 1000000)).padStart(6, '0') : null;
   const b = await insert(c, 'bookings', Object.assign({
     company_id: ctx.companyId, number, activity: act, trip_type: type, client_id: clientId, program_id: null, pax, date, time, pickup, destination, route_km: V.num(i, 'routeKm', { gt: 0, def: ri.km }), route_type: ri.type,
     vehicle_type: vehicleType, load_kg: loadKg, price, paid: 0, status, flight: act === 'tourism' ? V.str(i, 'flight', { max: 12, re: /^[A-Za-z0-9 ]+$/ }) : null, unassigned: true, notes: V.str(i, 'notes', { max: 1000, def: '' }),
@@ -266,7 +280,18 @@ define('booking.update', G.ops, async (ctx, i, c) => {
   const b = await core.lock(c, 'bookings', id, 'booking');
   if (['cancelled', 'done'].includes(b.status)) throw conflict('closed', 'الحجز منتهي أو ملغي', 'The booking is finished or cancelled');
   const trips = (await c.query("SELECT id, status FROM trips WHERE booking_id = $1 AND status <> 'cancelled'", [id])).rows;
-  const f = defined({ pax: P(i, 'pax', V.int, { min: 1, max: 100 }), price: P(i, 'price', V.num, { min: 0 }), flight: P(i, 'flight', V.str, { max: 12 }), notes: P(i, 'notes', V.str, { max: 1000, def: '' }), status: P(i, 'status', V.oneOf, ['tentative', 'confirmed']), time: P(i, 'time', V.time), date: P(i, 'date', V.date), vehicle_type: has(i, 'vehicleType') ? (await vtypes.resolve(c, ctx, i.vehicleType)).code : undefined, load_kg: P(i, 'loadKg', V.num, { gt: 0, max: 100000 }) });
+  // the booking's activity decides what can change, as on create
+  const cargo = b.activity === 'cargo';
+  const only = (ok, keys, ar, en) => { if (!ok) for (const k of keys) if (has(i, k)) throw bad('load', ar, en, k); };
+  only(!cargo, ['pax'], 'الشحنة بالوزن مش بعدد ركاب', 'A shipment has a weight, not a headcount');
+  only(cargo, ['loadKg', 'goods', 'pieces', 'volumeM3', 'cargoFlags', 'deliverDate', 'deliverTime'], 'بيانات الشحنة للبضائع بس', 'Shipment details are for cargo only');
+  only(b.activity === 'tourism', ['flight'], 'رقم الطيران للسياحة بس', 'The flight number is for tourism only');
+  const flags = has(i, 'cargoFlags') ? [...new Set(V.arr(i, 'cargoFlags', { max: 3 }).map(x => V.oneOf({ x }, 'x', Object.keys(profiles.CARGO_FLAGS), { req: true })))] : undefined;
+  const f = defined({ pax: P(i, 'pax', V.int, { min: 1, max: 1000 }), price: P(i, 'price', V.num, { min: 0 }), flight: P(i, 'flight', V.str, { max: 12, re: /^[A-Za-z0-9 ]*$/ }), notes: P(i, 'notes', V.str, { max: 1000, def: '' }), status: P(i, 'status', V.oneOf, ['tentative', 'confirmed']), time: P(i, 'time', V.time), date: P(i, 'date', V.date), vehicle_type: has(i, 'vehicleType') ? (await vtypes.resolve(c, ctx, i.vehicleType)).code : undefined, load_kg: P(i, 'loadKg', V.num, { gt: 0, max: 100000 }),
+    goods: has(i, 'goods') ? V.str(i, 'goods', { req: true, max: 160 }) : undefined, pieces: P(i, 'pieces', V.int, { min: 1, max: 100000 }), volume_m3: P(i, 'volumeM3', V.num, { gt: 0, max: 1000 }), cargo_flags: flags,
+    deliver_date: P(i, 'deliverDate', V.date), deliver_time: P(i, 'deliverTime', V.time) });
+  if (cargo && (f.deliver_date !== undefined || f.deliver_time !== undefined || f.date || f.time))
+    deadlineCheck(f.date || b.date, f.time || b.time, f.deliver_date !== undefined ? f.deliver_date : b.deliver_date, f.deliver_time !== undefined ? f.deliver_time : b.deliver_time);
   if ((f.date || f.time || f.vehicle_type) && trips.length) throw conflict('assigned', 'الحجز متخصص له رحلة. ألغِ التخصيص أولاً لتغيير الموعد أو النوع.', 'The booking already has a trip. Unassign it first to change the date, time or type.');
   if (f.price != null && trips.length) await c.query("UPDATE trips SET revenue = $1 WHERE booking_id = $2 AND invoice_id IS NULL AND status <> 'cancelled'", [f.price, id]);
   if (f.pax != null && trips.length) {
@@ -509,7 +534,9 @@ define('trip.cancel', G.ops, async (ctx, i, c) => {
 define('trip.update', G.ops, async (ctx, i, c) => {
   const t = await core.lock(c, 'trips', V.uuid(i, 'id', { req: true }), 'trip');
   if (['completed', 'cancelled'].includes(t.status) && !has(i, 'revenue')) throw conflict('state', 'الرحلة منتهية أو ملغية', 'The trip is finished or cancelled');
-  const f = defined({ flight: P(i, 'flight', V.str, { max: 12 }), flight_status: P(i, 'flightStatus', V.oneOf, ['ontime', 'delayed', 'landed', 'cancelled']), pax: P(i, 'pax', V.int, { min: 1, max: 100 }) });
+  if (t.activity !== 'tourism') for (const k of ['flight', 'flightStatus']) if (has(i, k)) throw bad('flight', 'الطيران للسياحة بس', 'Flights are for tourism only', k);
+  if (t.activity === 'cargo' && has(i, 'pax')) throw bad('load', 'الشحنة بالوزن مش بعدد ركاب', 'A shipment has a weight, not a headcount', 'pax');
+  const f = defined({ flight: P(i, 'flight', V.str, { max: 12 }), flight_status: P(i, 'flightStatus', V.oneOf, ['ontime', 'delayed', 'landed', 'cancelled']), pax: P(i, 'pax', V.int, { min: 1, max: 1000 }) });
   if (has(i, 'revenue')) { if (t.invoice_id) throw conflict('invoiced', 'الرحلة مفوترة، عدّل بإشعار دائن', 'The trip is invoiced; adjust it with a credit note'); f.revenue = V.num(i, 'revenue', { min: 0 }); }
   if (f.pax) { const v = await core.mustExist(c, 'vehicles', t.vehicle_id); if (v.seats > 0 && v.seats < f.pax) throw bad('pax', `سعة المركبة ${v.seats}`, `Vehicle capacity is ${v.seats}`, 'pax'); }
   if (has(i, 'driverId') || has(i, 'startTime')) {

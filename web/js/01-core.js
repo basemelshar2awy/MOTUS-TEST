@@ -5,6 +5,8 @@ var M = (typeof window !== 'undefined' ? window : globalThis).M = {};
 
 /* ---------- dates (ISO yyyy-mm-dd strings, UTC math) ---------- */
 M.TODAY = new Date().toISOString().slice(0, 10);   // replaced by the server's company-time-zone date at login
+/* now as 'YYYY-MM-DD HH:MM' in the company's time zone (same format as the server's timestamps) */
+M.nowLocal = () => { try { const z = M.TZ; return new Intl.DateTimeFormat('en-CA', { timeZone: z || undefined, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()).replace(',', '').replace(' 24:', ' 00:'); } catch (e) { return M.TODAY + ' 00:00'; } };
 M.START = M.TODAY;                                   // first day with data (company go-live)
 M.d = s => new Date(s + 'T00:00:00Z');
 M.iso = dt => dt.toISOString().slice(0, 10);
@@ -102,6 +104,7 @@ M.clientTypesFor = act => [...new Set((act ? [act] : M.acts()).flatMap(a => (M.p
 M.applySnapshot = snap => {
   const D = snap.data, cid = snap.company.id;
   M.TODAY = snap.today;
+  M.TZ = snap.company.timezone || null;
   M.activities = snap.activities || [];
   M.activityCatalog = snap.activityCatalog || [];
   M.profiles = Object.assign({ byActivity: {}, placeKinds: {}, clientTypes: {}, cargoFlags: {}, commonPlaceKinds: [], tripTypeNames: {} }, snap.profiles || {});

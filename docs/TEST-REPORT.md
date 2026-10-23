@@ -1,3 +1,16 @@
+# Test report — MOTUS Fleet 1.1.0-preview.2 (2026-10-23)
+Environment: Linux, Node.js 22, PostgreSQL 16, Chromium via Playwright. Windows scripts not re-run for this build.
+
+## Automated tests — 83/83 pass
+workflow 7 · security 10 · integration 6 · rules 6 · activities 9 · vehicletypes 8 · calendar 7 · country 6 · identity 7 · contracts 7 · separation 10.
+`separation.test.js` covers: starting places, client types and profiles per activity; tourism bookings refuse weight and cargo trip types; shipments (weight + goods, `SH-` numbers, delivery code closes the trip, 5 wrong tries lock it, new code, admin override with a reason); a two-activity company choosing the activity; school lines creating the week's runs (busy runs left unassigned); lines under an exclusive per-trip contract; delivery deadlines and activity-aware edits; empty returns; the code delivered to the shipper's system once, blanked from the stored webhook, never shown by the API.
+
+## Browser end-to-end
+`browser.py` on the review data, for each account (Sabeel team, tourism, schools, staff, intercity, cargo, two activities, Saudi, truck driver): 122 page views (61 routes × Arabic and English) — 0 with problems, 0 browser errors.
+`Load-DemoData` (`server/tools/demo-data.js`) run on a fresh database: all review companies created and filled; a second run is refused.
+
+---
+
 # Test report — MOTUS Fleet 1.0.0 (2026-10-17)
 
 Environment: Linux, Node.js 22.22, PostgreSQL 16.15, Chromium via Playwright, PowerShell 7.4 (Linux).

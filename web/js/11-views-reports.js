@@ -84,13 +84,49 @@
   rep('dsp', 'accfines', 'الحوادث والمخالفات', 'Accidents & fines', 'لكل سائق ومركبة.', 'Per driver and vehicle.', P => ({ rows: U.db().drivers.map(d => ({ d, acc: U.db().accidents.filter(a => a.driverId === d.id).length, fines: U.db().fines.filter(f => f.driverId === d.id).length, amount: M.sum(U.db().fines.filter(f => f.driverId === d.id), f => f.amount) })).filter(r => r.acc || r.fines), columns: [{ label: tt('السائق', 'Driver'), value: r => M.L(r.d.name), render: r => U.dLabel(r.d) }, col(tt('حوادث', 'Accidents'), 'acc', { num: 1 }), col(tt('مخالفات', 'Fines'), 'fines', { num: 1 }), col(tt('قيمة المخالفات', 'Fine amount'), 'amount', { money: 1 })] }));
   rep('dsp', 'inspfail', 'فشل الفحوصات', 'Inspection failures', 'البنود الفاشلة في فحص ما قبل الرحلة.', 'Failed pre-trip items.', P => ({ rows: U.db().inspections.filter(i => i.result === 'failed'), columns: [{ label: tt('التاريخ', 'Date'), value: i => i.date, render: i => M.date(i.date) }, { label: tt('المركبة', 'Vehicle'), value: i => U.find('vehicles', i.vehicleId).code }, { label: tt('البنود', 'Items'), value: i => i.failedItems.join(', ') }] }));
 
+  /* ---------- per activity ---------- */
+  const lineName = id => { const l = U.find('lines', id); return l && l.number ? `<a href="#line.${l.id}">${M.esc(M.L(l.name))}</a> <span class="muted small">${l.number}</span>` : '—'; };
+  const lineSeats = l => { const v = l.vehicleId ? U.find('vehicles', l.vehicleId) : null; return (v && v.seats) || (M.vehicleClasses[l.vehicleType] || {}).seats || 0; };
+  rep('dsp', 'lineontime', 'الالتزام بمواعيد الخطوط', 'Line punctuality', 'رحلات كل خط في الموعد والمتأخرة ومتوسط التأخير (دخول المدارس والورديات والمواعيد الثابتة).', 'Runs per line on time and late, with the average delay (school starts, shifts, fixed departures).', P => {
+    const ts = trips(P).filter(t => t.lineId);
+    const rows = [...M.groupBy(ts, t => t.lineId)].map(([k, l]) => ({ k, name: M.L(U.find('lines', k).name || ''), runs: l.length, late: l.filter(t => !t.onTime).length, rate: l.filter(t => t.onTime).length / l.length, delay: M.avg(l.filter(t => !t.onTime), t => t.delayMin) || 0 })).sort((a, b) => a.rate - b.rate);
+    return { rows, chart: bar(rows.map(r => r.name), rows.map(r => Math.round(r.rate * 100)), tt('% في الموعد', '% on time')), columns: [{ label: tt('الخط', 'Line'), value: r => r.name, render: r => lineName(r.k) }, col(tt('رحلات', 'Runs'), 'runs', { num: 1 }), col(tt('متأخرة', 'Late'), 'late', { num: 1 }), col(tt('في الموعد', 'On time'), 'rate', { pct: 1 }), col(tt('متوسط التأخير (د)', 'Avg delay (min)'), 'delay', { n1: 1 })] };
+  });
+  rep('ops', 'lineocc', 'إشغال الخطوط', 'Line occupancy', 'العدد على كل خط مقابل مقاعد مركبته؛ في الخطوط بين المدن المحجوز والمتاح.', 'Headcount on each line against its vehicle seats; for intercity lines, booked and available seats.', P => {
+    const ts = trips(P).filter(t => t.lineId);
+    const rows = (U.db().lines || []).filter(l => l.status !== 'ended').map(l => { const seats = lineSeats(l); const runs = ts.filter(t => t.lineId === l.id); return { k: l.id, name: M.L(l.name), act: M.L(M.actName(l.activity)), head: l.headcount, seats, free: Math.max(0, seats - l.headcount), occ: seats ? l.headcount / seats : 0, runs: runs.length, seatRuns: runs.length * seats, carried: M.sum(runs, t => t.pax || 0) }; }).sort((a, b) => a.occ - b.occ);
+    return { rows, chart: bar(rows.map(r => r.name), rows.map(r => Math.round(r.occ * 100)), tt('% إشغال', '% occupancy')), columns: [{ label: tt('الخط', 'Line'), value: r => r.name, render: r => lineName(r.k) }, M.multi() ? col(tt('النشاط', 'Activity'), 'act') : null, col(tt('العدد', 'Headcount'), 'head', { num: 1 }), col(tt('المقاعد', 'Seats'), 'seats', { num: 1 }), col(tt('متاح', 'Available'), 'free', { num: 1 }), col(tt('الإشغال', 'Occupancy'), 'occ', { pct: 1 }), col(tt('رحلات في الفترة', 'Runs in period'), 'runs', { num: 1 }), col(tt('مقاعد-رحلة', 'Seat-runs'), 'seatRuns', { num: 1 }), col(tt('اتنقل فعلاً', 'Carried'), 'carried', { num: 1 })].filter(Boolean) };
+  });
+  rep('dsp', 'flightontime', 'الالتزام بمواعيد الطيران', 'Airport punctuality', 'رحلات المطار: الاستلام في الموعد، والرحلات اللي طيرانها اتأخر.', 'Airport trips: pickups on time, and trips whose flight was delayed.', P => {
+    const ts = trips(P).filter(t => t.activity === 'tourism' && t.type === 'airport');
+    const rows = [...M.groupBy(ts, t => t.driverId)].map(([k, l]) => ({ d: U.find('drivers', k), trips: l.length, flights: l.filter(t => t.flight).length, delayedFlights: l.filter(t => t.flightStatus === 'delayed').length, late: l.filter(t => !t.onTime).length, rate: l.filter(t => t.onTime).length / l.length, delay: M.avg(l.filter(t => !t.onTime), t => t.delayMin) || 0 })).sort((a, b) => a.rate - b.rate);
+    return { rows, columns: [{ label: tt('السائق', 'Driver'), value: r => M.L(r.d.name), render: r => U.dLabel(r.d) }, col(tt('رحلات مطار', 'Airport trips'), 'trips', { num: 1 }), col(tt('برقم طيران', 'With a flight no.'), 'flights', { num: 1 }), col(tt('طيران متأخر', 'Delayed flights'), 'delayedFlights', { num: 1 }), col(tt('استلام متأخر', 'Late pickups'), 'late', { num: 1 }), col(tt('في الموعد', 'On time'), 'rate', { pct: 1 }), col(tt('متوسط التأخير (د)', 'Avg delay (min)'), 'delay', { n1: 1 })] };
+  });
+  rep('ops', 'cargokpi', 'طن-كم والإشغال والكيلومترات الفاضية', 'Tonne-km, load factor & empty km', 'لكل مركبة: الأطنان، طن-كم، متوسط نسبة الحمولة من سعة المركبة، والكيلومترات الفاضية (رحلات العودة فاضية).', 'Per vehicle: tonnes, tonne-km, average load against capacity, and empty kilometres (empty returns).', P => {
+    const ts = trips(P).filter(t => t.activity === 'cargo');
+    const rows = [...M.groupBy(ts, t => t.vehicleId)].map(([k, l]) => {
+      const v = U.find('vehicles', k); const loaded = l.filter(t => t.type !== 'empty_return'); const empty = l.filter(t => t.type === 'empty_return');
+      const kg = t => (t.bookingId ? U.find('bookings', t.bookingId).loadKg : 0) || 0; const cap = v.payloadKg || (M.vehicleClasses[v.type] || {}).payloadKg || 0;
+      const lkm = M.sum(loaded, t => t.km || 0), ekm = M.sum(empty, t => t.km || 0);
+      return { v, shipments: loaded.length, tonnes: M.sum(loaded, kg) / 1000, tkm: M.sum(loaded, t => kg(t) / 1000 * (t.km || 0)), lf: cap && loaded.length ? M.avg(loaded, t => kg(t) / cap) : 0, lkm, ekm, eshare: lkm + ekm ? ekm / (lkm + ekm) : 0 };
+    }).sort((a, b) => b.tkm - a.tkm);
+    return { rows, chart: bar(rows.map(r => r.v.code), rows.map(r => Math.round(r.tkm)), tt('طن-كم', 'Tonne-km')), columns: [vcol(), col(tt('شحنات', 'Shipments'), 'shipments', { num: 1 }), col(tt('أطنان', 'Tonnes'), 'tonnes', { n1: 1 }), col(tt('طن-كم', 'Tonne-km'), 'tkm', { num: 1 }), col(tt('نسبة الحمولة', 'Load factor'), 'lf', { pct: 1 }), col(tt('كم محمّل', 'Loaded km'), 'lkm', { num: 1 }), col(tt('كم فاضي', 'Empty km'), 'ekm', { num: 1 }), col(tt('نسبة الفاضي', 'Empty share'), 'eshare', { pct: 1 })], footer: sumFoot(['shipments', 'tkm', 'lkm', 'ekm']) };
+  });
+  rep('dsp', 'deliveries', 'التسليم في الموعد', 'On-time delivery', 'الشحنات اللي ليها آخر موعد للتسليم: اتسلمت في الموعد، اتسلمت متأخر، أو متأخرة لسه.', 'Shipments with a deadline: delivered on time, delivered late, or still overdue.', P => {
+    const now = M.nowLocal(); const bs = U.db().bookings.filter(b => b.activity === 'cargo' && b.deliverDate && b.status !== 'cancelled' && b.date >= P.from && b.date <= P.to);
+    const due = b => b.deliverDate + ' ' + (b.deliverTime || '23:59');
+    const rows = [...M.groupBy(bs, b => b.clientId)].map(([k, l]) => { const done = l.filter(b => b.deliveredAt); const ok = done.filter(b => b.deliveredAt <= due(b)).length; return { c: U.find('clients', k), n: l.length, ok, lateDone: done.length - ok, overdue: l.filter(b => !b.deliveredAt && now > due(b)).length, rate: done.length ? ok / done.length : 0 }; }).sort((a, b) => a.rate - b.rate);
+    return { rows, columns: [{ label: tt('العميل', 'Client'), value: r => M.L(r.c.name), render: r => U.cLabel(r.c) }, col(tt('شحنات بموعد', 'With a deadline'), 'n', { num: 1 }), col(tt('في الموعد', 'On time'), 'ok', { num: 1 }), col(tt('اتسلمت متأخر', 'Delivered late'), 'lateDone', { num: 1 }), col(tt('متأخرة لسه', 'Still overdue'), 'overdue', { num: 1 }), col(tt('نسبة الالتزام', 'On-time rate'), 'rate', { pct: 1 })] };
+  });
+
   U.flagName = f => ({ location_mismatch: tt('الموقع بعيد عن GPS', 'Far from GPS position'), outside_hours: tt('خارج المواعيد المسموحة', 'Outside allowed hours'), no_trip: tt('بدون رحلة في هذا الوقت', 'No trip at that time'), consumption: tt('استهلاك غير طبيعي', 'Abnormal consumption'), duplicate: tt('مكررة', 'Duplicate'), tank: tt('أكبر من التانك', 'Over tank size') }[f] || f);
 
   const tabs = [['ops', ['تشغيلية', 'Operational']], ['fin', ['مالية ومحاسبية', 'Financial']], ['ana', ['تحليلية', 'Analytical']], ['stat', ['إحصائية', 'Statistical']], ['inv', ['المخازن والصيانة', 'Inventory & workshop']], ['trk', ['التتبع', 'Tracking']], ['prv', ['مزودي الخدمة', 'Service providers']], ['dsp', ['الحركة', 'Dispatch']]];
   let rTab = 'ops';
   U.act('rtab', el => { rTab = el.dataset.t; U.render(); });
   /* reports that belong to one activity */
-  const REPORT_ACTIVITY = { progexec: 'tourism', progpl: 'tourism', variance: 'tourism' };
+  const LINE_ACTS = ['education', 'staff', 'intercity'];
+  const REPORT_ACTIVITY = { progexec: 'tourism', progpl: 'tourism', variance: 'tourism', flightontime: 'tourism', lineontime: LINE_ACTS, lineocc: LINE_ACTS, cargokpi: 'cargo', deliveries: 'cargo' };
   R.forEach(r => { r.activity = REPORT_ACTIVITY[r.id] || null; });
   U.reports = R;
   U.route('reports', () => U.head(tt('مركز التقارير', 'Reports center'), tt(`${R.length} تقرير. كل تقرير له فلتر فترة وجدول ورسم وتصدير Excel وPDF وCSV.`, `${R.length} reports. Each has a period filter, table, chart and Excel/PDF/CSV export.`)) +

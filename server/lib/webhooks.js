@@ -41,7 +41,9 @@ async function deliverOne(companyId, d) {
   const attempts = d.attempts + 1;
   if (status === 'retry') status = attempts >= 6 ? 'failed' : 'retrying';
   await db.tx(companyId, c => c.query(
+    // a shipment's delivery code is kept only until its delivery is over (MOTUS keeps the hash only)
     `UPDATE webhook_deliveries SET status = $1, code = $2, attempts = $3, last_error = $4, delivered_at = CASE WHEN $1 = 'delivered' THEN now() ELSE delivered_at END,
+       payload = CASE WHEN event = 'shipment.code' AND $1 IN ('delivered','failed') THEN jsonb_set(payload, '{data,deliveryCode}', '"******"') ELSE payload END,
        next_attempt_at = now() + make_interval(secs => $5) WHERE id = $6`,
     [status, code, attempts, error, BACKOFF[Math.min(attempts - 1, BACKOFF.length - 1)], d.id]));
   if (status !== 'delivered') log.warn('webhook delivery problem', { companyId, delivery: d.id, event: d.event, status, error });

@@ -2,8 +2,10 @@
  MOTUS - load the review companies with sample data (TEST SERVERS ONLY).  Run as Administrator.
  Usage: .\Load-DemoData.ps1                     (sign-in e-mails end in @motus.test)
         .\Load-DemoData.ps1 -Domain example.com
- Adds four companies whose codes start with D (DTR tourism, DCG cargo, DKS Saudi Arabia, DNW new),
- fills them with sample data, one driver working for two companies, and operating contracts.
+ Adds companies whose codes start with D: one per activity (DTR tourism, DSC schools, DST staff,
+ DIC intercity, DCG cargo), DMX with two activities, DKS in Saudi Arabia and DNW new without data;
+ fills them with sample data (lines, shipments with delivery codes), one driver working for two
+ companies, a truck driver with an open shipment, and operating contracts.
  Prints every sign-in with a temporary password (shown once). Runs only once per database.
 #>
 [CmdletBinding()]

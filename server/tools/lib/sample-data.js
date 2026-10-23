@@ -98,11 +98,12 @@ async function seed(c) {
     }
     if (act === 'cargo') {
       const C = sa ? { a: 'RUHIC', b: 'JEDPT', w: 'RUHWH' } : { a: 'RMD10', b: 'ALXPT', w: 'CAIWH' };
-      const S = [[mine.cls[0], 'دقيق مكيّس', 12000, 240, 0, -3], [mine.cls[1], 'حديد تسليح', 6500, null, 1, -2], [mine.cls[2], 'مواد غذائية', 1200, 80, 2, -1], [mine.cls[0], 'كراتين مياه', 900, 120, 3, -1]];
+      // [client, goods, kg, pieces, vehicle, day, deliver by] — the food load arrives after its deadline (shows in "On-time delivery")
+      const S = [[mine.cls[0], 'دقيق مكيّس', 12000, 240, 0, -3, [1, '18:00']], [mine.cls[1], 'حديد تسليح', 6500, null, 1, -2, [2, null]], [mine.cls[2], 'مواد غذائية', 1200, 80, 2, -1, [-1, '14:00']], [mine.cls[0], 'كراتين مياه', 900, 120, 3, -1, [0, '20:00']]];
       const done = [];
-      for (const [cl, goods, kg, pcs, vi, d] of S) {
+      for (const [cl, goods, kg, pcs, vi, d, [dd, dt]] of S) {
         const v = mine.veh[vi];
-        const s = await ok('booking.create', Object.assign({ clientId: cl, date: day(d), time: '07:00', loadKg: kg, goods, pieces: pcs || undefined, cargoFlags: goods === 'مواد غذائية' ? ['refrigerated'] : [], pickup: vi === 3 ? C.w : C.a, destination: vi === 3 ? (sa ? 'RUH' : 'CAI') : C.b, vehicleType: v.type, price: Math.round(kg * 0.35), backdated: true, vehicleId: v.id }, A));
+        const s = await ok('booking.create', Object.assign({ clientId: cl, date: day(d), time: '07:00', loadKg: kg, goods, pieces: pcs || undefined, cargoFlags: goods === 'مواد غذائية' ? ['refrigerated'] : [], deliverDate: day(dd), deliverTime: dt || undefined, pickup: vi === 3 ? C.w : C.a, destination: vi === 3 ? (sa ? 'RUH' : 'CAI') : C.b, vehicleType: v.type, price: Math.round(kg * 0.35), backdated: true, vehicleId: v.id }, A));
         done.push({ s, v });
       }
       let odo = 20000;
@@ -112,10 +113,14 @@ async function seed(c) {
         odo += 230;
         await ok('trip.start', { id: trip.id }); await ok('trip.complete', { id: trip.id, endKm: 20000 + 230 + k, deliveryCode: s.deliveryCode });
       }
+      // the steel truck comes back empty from the port (empty km)
+      { const v = done[1].v; const snap = (await c.get('/api/snapshot')).data.data; const odo0 = snap.vehicles.find(x => x.id === v.id).odometer;
+        const e = await ok('booking.create', Object.assign({ clientId: mine.cls[1], tripType: 'empty_return', date: day(-2), time: '17:00', pickup: C.b, destination: C.a, vehicleType: v.type, price: 0, backdated: true, vehicleId: v.id }, A));
+        await ok('trip.start', { id: e.trip.id }); await ok('trip.complete', { id: e.trip.id, endKm: odo0 + 225 }); }
       const last = (await c.get('/api/snapshot')).data.data.trips.find(t => t.bookingId === done[3].s.id);
       await ok('trip.start', { id: last.id });
       out.openShipment = { number: done[3].s.number, code: done[3].s.deliveryCode, tripId: last.id };
-      await ok('booking.create', Object.assign({ clientId: mine.cls[1], date: day(2), time: '06:00', loadKg: 15000, goods: 'لفائف صاج', pickup: C.a, destination: C.b, vehicleType: 'TH', price: 6500 }, A));
+      await ok('booking.create', Object.assign({ clientId: mine.cls[1], date: day(2), time: '06:00', loadKg: 15000, goods: 'لفائف صاج', deliverDate: day(3), deliverTime: '12:00', pickup: C.a, destination: C.b, vehicleType: 'TH', price: 6500 }, A));
       if (!out.inv) { const t0 = (await c.get('/api/snapshot')).data.data.trips.find(t => t.bookingId === done[0].s.id); out.inv = await ok('invoice.fromTrips', { clientId: mine.cls[0], tripIds: [t0.id] }); }
     }
   }

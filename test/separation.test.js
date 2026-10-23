@@ -23,7 +23,7 @@ async function vehicleWithDriver(c, type, n) {
 }
 
 before(async () => {
-  env = await H.createEnv(); const boot = await H.bootstrap(env); await env.start();
+  env = await H.createEnv({ MOTUS_WEBHOOK_WORKER: '1', MOTUS_ALLOW_PRIVATE_WEBHOOKS: '1' }); const boot = await H.bootstrap(env); await env.start();
   root = await H.signIn(env, 'root@t.test', boot.rootPw);
   tour = { c: await H.signIn(env, 'admin@aaa.test', boot.adminPw) };
   cargo = await company('CGO', ['cargo']);
@@ -137,4 +137,61 @@ test('a line under an exclusive per-trip contract: runs priced by the contract, 
   assert.equal(g.unassigned.length, 0, JSON.stringify(g.unassigned));
   const t = (await env.sql('SELECT revenue, contract_id FROM trips WHERE line_id = $1 LIMIT 1', [line.id])).rows[0];
   assert.deepEqual([Number(t.revenue), t.contract_id], [450, k.id]);
+});
+
+test('a shipment deadline comes after loading; edits follow the booking\'s activity', async () => {
+  const base = { clientId: ids.shipper, date: day(6), time: '08:00', loadKg: 3000, goods: 'Cement', pickup: 'RMD10', destination: 'ALXPT', vehicleType: 'TM', price: 2000 };
+  await status(cargo.c.do('booking.create', Object.assign({ deliverDate: day(5) }, base)), 400, 'deadline before loading');
+  await status(cargo.c.do('booking.create', Object.assign({ deliverDate: day(6), deliverTime: '07:00' }, base)), 400, 'deadline before the loading time');
+  const f = await ok(cargo.c.do('booking.create', Object.assign({ flight: 'MS985' }, base)));
+  assert.equal((await env.sql('SELECT flight FROM bookings WHERE id = $1', [f.id])).rows[0].flight, null, 'a tourism field is dropped in a company without tourism');
+  const s = await ok(cargo.c.do('booking.create', Object.assign({ deliverDate: day(7), deliverTime: '12:00' }, base)));
+  const snap = await ok(cargo.c.get('/api/snapshot'));
+  const b = snap.data.bookings.find(x => x.id === s.id);
+  assert.deepEqual([b.deliverDate, b.deliverTime], [day(7), '12:00']);
+  await status(cargo.c.do('booking.update', { id: s.id, pax: 20 }), 400, 'a shipment has no headcount');
+  await status(cargo.c.do('booking.update', { id: s.id, deliverDate: day(5) }), 400, 'edited deadline before loading');
+  await ok(cargo.c.do('booking.update', { id: s.id, goods: 'Bagged cement', pieces: 120, deliverTime: '16:00' }));
+  const row = (await env.sql('SELECT goods, pieces, deliver_time FROM bookings WHERE id = $1', [s.id])).rows[0];
+  assert.deepEqual([row.goods, row.pieces, row.deliver_time], ['Bagged cement', 120, '16:00']);
+  const tc = (await env.sql("SELECT id FROM clients WHERE type = 'agency' LIMIT 1")).rows[0];
+  const tb = await ok(tour.c.do('booking.create', { clientId: tc.id, date: day(6), time: '09:00', pax: 8, pickup: 'CAIAP', destination: 'CAI', vehicleType: 'MB', price: 700 }));
+  await status(tour.c.do('booking.update', { id: tb.id, loadKg: 300 }), 400, 'no weight on a passenger booking');
+  await status(tour.c.do('booking.update', { id: tb.id, goods: 'x' }), 400, 'no goods on a passenger booking');
+  await ok(tour.c.do('booking.update', { id: tb.id, pax: 9, flight: 'MS985' }));
+});
+
+test('an empty return carries no load and needs no delivery code', async () => {
+  const t = await vehicleWithDriver(cargo.c, 'TM', 7);
+  await status(cargo.c.do('booking.create', { clientId: ids.shipper, tripType: 'empty_return', loadKg: 100, date: day(8), time: '15:00', pickup: 'ALXPT', destination: 'RMD10', vehicleType: 'TM', price: 0 }), 400, 'empty means empty');
+  const e = await ok(cargo.c.do('booking.create', { clientId: ids.shipper, tripType: 'empty_return', date: day(8), time: '15:00', pickup: 'ALXPT', destination: 'RMD10', vehicleType: 'TM', price: 0, vehicleId: t.v }));
+  assert.equal(e.deliveryCode, undefined);
+  const row = (await env.sql('SELECT trip_type, otp_hash, load_kg FROM bookings WHERE id = $1', [e.id])).rows[0];
+  assert.deepEqual([row.trip_type, row.otp_hash, row.load_kg], ['empty_return', null, null]);
+  await env.sql("UPDATE trips SET date = $2 WHERE id = $1", [e.trip.id, day(0)]);
+  await ok(cargo.c.do('trip.start', { id: e.trip.id }));
+  const odo = (await env.sql('SELECT odometer FROM vehicles WHERE id = $1', [t.v])).rows[0].odometer;
+  await ok(cargo.c.do('trip.complete', { id: e.trip.id, endKm: Number(odo) + 210 }), 'closes without a code');
+});
+
+test('the delivery code reaches the shipper once and is not kept in plain text or shown by the API', async () => {
+  const http = require('node:http'); const got = [];
+  const rcv = http.createServer((req, res) => { let b = ''; req.on('data', d => { b += d; }); req.on('end', () => { got.push(b); res.end('ok'); }); });
+  await new Promise(r => rcv.listen(0, '127.0.0.1', r));
+  try {
+    await ok(cargo.c.do('webhook.create', { url: `http://127.0.0.1:${rcv.address().port}/naql`, events: ['shipment.code'] }));
+    const s = await ok(cargo.c.do('booking.create', { clientId: ids.shipper, date: day(9), time: '08:00', loadKg: 2000, goods: 'Rice', pickup: 'RMD10', destination: 'ALXPT', vehicleType: 'TM', price: 1500 }));
+    for (let n = 0; n < 40 && !got.length; n++) await new Promise(r => setTimeout(r, 500));
+    assert.equal(JSON.parse(got[0]).data.deliveryCode, s.deliveryCode, 'the shipper system gets the code');
+    for (let n = 0; n < 20; n++) { const st = (await env.sql("SELECT status FROM webhook_deliveries WHERE event = 'shipment.code'")).rows[0].status; if (st === 'delivered') break; await new Promise(r => setTimeout(r, 250)); }
+    const kept = (await env.sql("SELECT payload FROM webhook_deliveries WHERE event = 'shipment.code'")).rows[0].payload;
+    assert.notEqual(kept.data.deliveryCode, s.deliveryCode, 'not kept in plain text after delivery');
+    const k = await ok(cargo.c.do('apiKey.create', { name: 'Naql', scopes: ['bookings:read', 'bookings:write'] }));
+    const api = (m, u, b) => fetch(env.base + '/api/v1' + u, { method: m, headers: { Authorization: 'Bearer ' + k.key, 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then(async r => ({ status: r.status, data: await r.json() }));
+    const one = await api('GET', '/bookings/' + s.id);
+    assert.equal(one.status, 200); assert.ok(!('otpHash' in one.data.data), 'no code hash over the API');
+    assert.equal(one.data.data.goods, 'Rice');
+    const nc = await api('POST', `/bookings/${s.id}/newcode`, {});
+    assert.ok([200, 201].includes(nc.status), JSON.stringify(nc.data)); assert.match(nc.data.data.deliveryCode, /^\d{6}$/);
+  } finally { rcv.close(); }
 });

@@ -1,7 +1,7 @@
 -- Activity separation (server/lib/profiles.js holds the profiles).
 -- * Every booking, trip and contract belongs to one activity; its trip types, fields, places,
 --   client types and revenue account follow that activity.
--- * Cargo bookings are shipments: goods, pieces, volume, flags, and a delivery code (OTP). MOTUS
+-- * Cargo bookings are shipments: goods, pieces, volume, flags, a delivery deadline, and a delivery code (OTP). MOTUS
 --   keeps only the code's hash; the code goes to the shipper (or Sabeel Naql) who gives it to the
 --   consignee. The driver closes the delivery with it.
 -- * Lines: recurring runs (schools, universities, staff shifts, intercity departures) that create
@@ -70,6 +70,9 @@ ALTER TABLE bookings ADD COLUMN volume_m3 numeric(10,2) CHECK (volume_m3 IS NULL
 ALTER TABLE bookings ADD COLUMN cargo_flags text[] NOT NULL DEFAULT '{}';
 ALTER TABLE bookings ADD COLUMN otp_hash text;
 ALTER TABLE bookings ADD COLUMN otp_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE bookings ADD COLUMN deliver_date date;
+ALTER TABLE bookings ADD COLUMN deliver_time text CHECK (deliver_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$');
+ALTER TABLE bookings ADD CONSTRAINT bookings_deliver_after CHECK (deliver_date IS NULL OR deliver_date >= date);
 ALTER TABLE bookings ADD COLUMN delivered_at timestamptz;
 ALTER TABLE bookings ADD COLUMN delivered_by text;
 ALTER TABLE bookings ADD COLUMN line_id uuid;

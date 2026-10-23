@@ -18,7 +18,7 @@ const RES = {
   vehicles: { table: 'vehicles', scope: 'vehicles', create: 'vehicle.create', update: 'vehicle.update' },
   drivers: { table: 'drivers', scope: 'drivers', create: 'driver.create', update: 'driver.update', hide: ['national_id'] },
   clients: { table: 'clients', scope: 'clients', create: 'client.create', update: 'client.update' },
-  bookings: { table: 'bookings', scope: 'bookings', create: 'booking.create', update: 'booking.update', actions: { cancel: 'booking.cancel', assign: 'booking.assign' } },
+  bookings: { table: 'bookings', scope: 'bookings', create: 'booking.create', update: 'booking.update', actions: { cancel: 'booking.cancel', assign: 'booking.assign', newcode: 'shipment.newCode' }, hide: ['otp_hash'] },
   trips: { table: 'trips', scope: 'trips', actions: { start: 'trip.start', complete: 'trip.complete', cancel: 'trip.cancel' } },
   programs: { table: 'programs', scope: 'programs', create: 'program.create', actions: { schedule: 'program.schedule', cancel: 'program.cancel' } },
   invoices: { table: 'invoices', scope: 'invoices', create: 'invoice.manual', actions: { cancel: 'invoice.cancel' } },

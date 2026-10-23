@@ -74,7 +74,7 @@ async function load(companyId) {
     const tripIdsByBooking = {};
     D.trips.forEach(t => { if (t.bookingId) (tripIdsByBooking[t.bookingId] = tripIdsByBooking[t.bookingId] || []).push(t.id); });
     D.bookings = (await q('SELECT * FROM bookings WHERE date >= $1 OR status IN (\'tentative\',\'confirmed\') ORDER BY date, time', [since])).map(r => Object.assign(base(r), {
-      number: r.number, activity: r.activity, tripType: r.trip_type, lineId: r.line_id, goods: r.goods, pieces: r.pieces, volumeM3: N(r.volume_m3), cargoFlags: r.cargo_flags || [], hasCode: !!r.otp_hash, codeLocked: (r.otp_attempts || 0) >= 5, deliveredAt: r.delivered_at ? core.fmtTs(r.delivered_at) : null, deliveredBy: r.delivered_by, clientId: r.client_id, programId: r.program_id, pax: r.pax, date: r.date, time: r.time, pickup: r.pickup, destination: r.destination, routeKm: N(r.route_km), routeType: r.route_type,
+      number: r.number, activity: r.activity, tripType: r.trip_type, lineId: r.line_id, goods: r.goods, pieces: r.pieces, volumeM3: N(r.volume_m3), cargoFlags: r.cargo_flags || [], deliverDate: r.deliver_date, deliverTime: r.deliver_time, hasCode: !!r.otp_hash, codeLocked: (r.otp_attempts || 0) >= 5, deliveredAt: r.delivered_at ? core.fmtTs(r.delivered_at) : null, deliveredBy: r.delivered_by, clientId: r.client_id, programId: r.program_id, pax: r.pax, date: r.date, time: r.time, pickup: r.pickup, destination: r.destination, routeKm: N(r.route_km), routeType: r.route_type,
       vehicleType: r.vehicle_type, loadKg: N(r.load_kg), price: N(r.price), paid: N(r.paid), status: r.status, cancelReason: r.cancel_reason_ar ? [r.cancel_reason_ar, r.cancel_reason_en || r.cancel_reason_ar] : null,
       flight: r.flight, unassigned: r.unassigned && r.status !== 'cancelled', notes: r.notes, tripIds: tripIdsByBooking[r.id] || [],
     }));
@@ -207,7 +207,7 @@ function forDriver(snap, driverId) {
   D.trips = trips.map(t => Object.assign({}, t, { revenue: 0, clientId: null }));
   // what the driver needs about the trip's shipment or line (no prices, no client)
   const bids = new Set(trips.map(t => t.bookingId)), lids = new Set(trips.map(t => t.lineId).filter(Boolean));
-  D.bookings = src.bookings.filter(b => bids.has(b.id)).map(b => ({ id: b.id, number: b.number, activity: b.activity, tripType: b.tripType, goods: b.goods, loadKg: b.loadKg, pieces: b.pieces, cargoFlags: b.cargoFlags, hasCode: b.hasCode, deliveredAt: b.deliveredAt }));
+  D.bookings = src.bookings.filter(b => bids.has(b.id)).map(b => ({ id: b.id, number: b.number, activity: b.activity, tripType: b.tripType, goods: b.goods, loadKg: b.loadKg, pieces: b.pieces, cargoFlags: b.cargoFlags, deliverDate: b.deliverDate, deliverTime: b.deliverTime, hasCode: b.hasCode, deliveredAt: b.deliveredAt }));
   D.lines = (src.lines || []).filter(l => lids.has(l.id)).map(l => ({ id: l.id, number: l.number, activity: l.activity, name: l.name, stops: l.stops, headcount: l.headcount, from: l.from, to: l.to }));
   D.drivers = me ? [me] : [];
   D.vehicles = src.vehicles.filter(v => vids.has(v.id)).map(v => ({ id: v.id, code: v.code, plate: v.plate, type: v.type, make: v.make, model: v.model, seats: v.seats, status: v.status, odometer: v.odometer }));
