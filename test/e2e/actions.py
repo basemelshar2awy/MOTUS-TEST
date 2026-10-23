@@ -16,7 +16,7 @@ def check(name, cond, extra=''):
 def login(page, email, pw):
     page.goto(base + '/')
     page.wait_for_selector('#login-form')
-    page.fill('#login-form input[type=email]', email)
+    page.fill('#lg-email', email)
     page.fill('#login-form input[type=password]', pw)
     page.click('#login-form button[type=submit]')
 

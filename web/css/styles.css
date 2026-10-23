@@ -367,3 +367,14 @@ pre.code { display: block; padding: 12px; overflow: auto; white-space: pre; max-
   body.print-doc .doc-sheet { position: absolute; inset-inline: 0; top: 0; width: 100%; box-shadow: none; border: 0; }
   body.print-doc .no-print { display: none !important; }
 }
+
+/* invitations from other companies (one Sabeel account, several companies) */
+.banner-invites { display: flex; gap: 12px; align-items: flex-start; margin: 16px 24px 0; padding: 12px 14px; border: 1px solid var(--motus-border); border-radius: 10px; background: var(--motus-info-bg); color: var(--motus-primary); }
+.banner-invites > svg { width: 20px; height: 20px; flex: none; margin-top: 2px; }
+.banner-invites > div { flex: 1; min-width: 0; }
+.invites { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.invite { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 12px; border: 1px solid var(--motus-border); border-radius: 8px; background: #fff; color: inherit; }
+/* driver: my trips */
+.my-trips { display: grid; gap: 12px; }
+.my-trip { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.my-trip .route { font-size: 16px; font-weight: 700; }

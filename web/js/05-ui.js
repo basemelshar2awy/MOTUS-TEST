@@ -87,9 +87,11 @@
   U.roles = {
     super_admin: ['مسؤول المنصة (كل الشركات)', 'Platform admin (all companies)'], company_admin: ['مدير النظام', 'Company admin'], fleet_manager: ['مدير الأسطول', 'Fleet manager'],
     operations: ['مدير الحركة', 'Dispatch manager'], accountant: ['المحاسب', 'Accountant'], maintenance: ['مسؤول الصيانة', 'Maintenance lead'], viewer: ['مراجع (قراءة فقط)', 'Viewer (read only)'],
+    driver: ['سائق', 'Driver'],
   };
   const ALL = ['super_admin', 'company_admin', 'fleet_manager'];
   U.nav = [
+    { g: ['السائق', 'Driver'], items: [['mytrips', 'bus', 'رحلاتي', 'My trips', ['driver']]] },
     { g: ['الرئيسية', 'Overview'], items: [['dashboard', 'dashboard', 'لوحة التحكم', 'Executive dashboard', [...ALL, 'operations', 'accountant', 'maintenance', 'viewer']], ['alerts', 'bell', 'التنبيهات', 'Alerts', [...ALL, 'operations', 'accountant', 'maintenance', 'viewer']]] },
     { g: ['مدير الحركة', 'Dispatch'], items: [['dispatch', 'board', 'لوحة توزيع الحركة', 'Dispatch board', [...ALL, 'operations']], ['calendar', 'calendar', 'تقويم الحركة', 'Operations calendar', [...ALL, 'operations', 'viewer']], ['readiness', 'shield', 'جاهزية المركبات', 'Vehicle readiness', [...ALL, 'operations', 'maintenance']], ['inspections', 'clipboard', 'فحص ما قبل الرحلة', 'Pre-trip inspections', [...ALL, 'operations', 'maintenance']], ['availability', 'clock', 'إتاحة السائقين', 'Driver availability', [...ALL, 'operations']], ['subcontract', 'truck', 'مركبات من الباطن', 'Subcontracted vehicles', [...ALL, 'operations', 'accountant']], ['incidents', 'alert', 'الحوادث والمخالفات', 'Accidents & fines', [...ALL, 'operations']], ['handover', 'history', 'تسليم الشيفت', 'Shift handover', [...ALL, 'operations']], ['documents', 'folder', 'المستندات', 'Document vault', [...ALL, 'operations', 'maintenance']], ['driverapp', 'phone', 'شاشة السائق', 'Driver app view', [...ALL, 'operations']]] },
     { g: ['العمليات', 'Operations'], items: [['bookings', 'ticket', 'الحجوزات', 'Bookings', [...ALL, 'operations', 'accountant', 'viewer']], ['programs', 'route', 'البرامج السياحية', 'Tour programs', [...ALL, 'operations', 'accountant', 'viewer']], ['trips', 'bus', 'الرحلات', 'Trips', [...ALL, 'operations', 'accountant', 'viewer']]] },
@@ -139,7 +141,7 @@
             <button class="icon-btn menu-btn" data-act="open-nav" aria-label="${M.tt('فتح القائمة', 'Open menu')}">${U.icon('menu')}</button>
             <div class="search">${U.icon('search')}<input id="gsearch" type="search" autocomplete="off" placeholder="${M.tt('ابحث برقم لوحة، حجز، فاتورة، عميل…', 'Search plate, booking, invoice, client…')}" aria-label="${M.tt('بحث', 'Search')}"><div class="search-results" id="gsearch-res" hidden></div></div>
             <div class="top-actions">
-              ${M.state.role === 'super_admin' ? `<select class="select" id="company-switch" aria-label="${M.tt('الشركة', 'Company')}">${M.companies.filter(c => c.status === 'active').map(c => `<option value="${c.id}" ${c.id === comp.id ? 'selected' : ''}>${M.esc(M.L(c.name))}</option>`).join('')}</select>` : `<span class="badge outline plain hide-sm">${M.esc(M.L(comp.name))}</span>`}
+              ${M.state.role === 'super_admin' || M.companies.length > 1 ? `<select class="select" id="company-switch" aria-label="${M.tt('الشركة', 'Company')}">${M.companies.map(c => `<option value="${c.id}" ${c.id === comp.id ? 'selected' : ''}>${M.esc(M.L(c.name))}</option>`).join('')}</select>` : `<span class="badge outline plain hide-sm">${M.esc(M.L(comp.name))}</span>`}
               <button class="icon-btn user-btn" data-act="user-menu" aria-label="${M.tt('حسابي', 'My account')}" title="${M.esc(M.state.user ? M.state.user.email : '')}">${U.icon('user')}</button>
               <div class="lang-switch" role="group" aria-label="Language"><button data-lang="ar" class="${M.lang === 'ar' ? 'on' : ''}">عربي</button><button data-lang="en" class="${M.lang === 'en' ? 'on' : ''}">English</button></div>
               <a class="icon-btn" href="#alerts" aria-label="${M.tt('التنبيهات', 'Alerts')}">${U.icon('bell')}<span class="dot">${alerts.length}</span></a>
@@ -158,6 +160,7 @@
     const main = $('#main');
     U.charts = [];
     if (U.timers) U.timers.forEach(t => clearInterval(t)); U.timers = [];
+    if (M.state.role === 'driver' && name !== 'mytrips') { location.hash = 'mytrips'; return; }   // a driver has one page: their trips
     const fn = U.routes[name] || U.routes.dashboard;
     if (!M.has(U.activityOf(name))) { const n = (M.activityCatalog.find(x => x.code === U.activityOf(name)) || { name: { ar: '', en: '' } }).name; main.innerHTML = U.empty('lock', M.tt(`نشاط "${n.ar}" مش مفعّل لشركتك`, `The "${n.en}" activity is not enabled for your company`), M.tt('تواصل مع فريق سبيل لتفعيله.', 'Contact the Sabeel team to enable it.')); return; }
     if (!U.can(name)) { main.innerHTML = U.empty('lock', M.tt('لا تملك صلاحية لهذه الصفحة', 'You don’t have access to this page'), M.tt('اطلب من مدير النظام تعديل صلاحيات حسابك إذا كنت تحتاجها.', 'Ask your company admin to change your role if you need it.')); return; }
@@ -196,7 +199,7 @@
     synced: ['متزامن', 'Synced', 'success'], failed: ['فشل', 'Failed', 'danger'], not_synced: ['غير متزامن', 'Not synced', 'muted'],
     ok: ['سليم', 'OK', 'success'], soon: ['قريب', 'Due soon', 'warning'], reorder: ['حد الطلب', 'Reorder', 'warning'], out: ['نفد', 'Out of stock', 'danger'], over: ['زيادة', 'Overstock', 'muted'],
     open: ['مفتوح', 'Open', ''], waiting_parts: ['في انتظار قطع', 'Waiting for parts', 'warning'], in_progress: ['جاري', 'In progress', 'warning'], closed: ['مغلق', 'Closed', 'success'],
-    approved: ['معتمد', 'Approved', 'success'], received: ['مستلم', 'Received', 'success'], pending: ['قيد الانتظار', 'Pending', 'warning'],
+    approved: ['معتمد', 'Approved', 'success'], received: ['مستلم', 'Received', 'success'], pending: ['قيد الانتظار', 'Pending', 'warning'], awaiting: ['في انتظار قبول الدعوة', 'Awaiting acceptance', 'warning'],
     online: ['متصل', 'Online', 'success'], offline: ['غير متصل', 'Offline', 'danger'], connected: ['متصل', 'Connected', 'success'], not_connected: ['غير متصل', 'Not connected', 'muted'], error: ['خطأ', 'Error', 'danger'],
     matched: ['مطابقة', 'Matched', 'success'], unmatched: ['غير مطابقة', 'Unmatched', 'warning'], rejected: ['مرفوضة', 'Rejected', 'danger'],
     passed: ['ناجح', 'Passed', 'success'], high: ['عالية', 'High', 'danger'], medium: ['متوسطة', 'Medium', 'warning'], low: ['منخفضة', 'Low', 'muted'],

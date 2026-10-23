@@ -1,11 +1,11 @@
 'use strict';
 /* Operations & dispatch: clients, tour programs, bookings, assignment, trips, driver availability,
    subcontracting, accidents, fines, shift handover, documents. */
-const { define, G } = require('./registry');
+const { define, G, actions } = require('./registry');
 const V = require('../lib/validate');
 const core = require('../lib/core');
 const { insert, update, defined } = require('../lib/sql');
-const { bad, conflict, notFound, AppError } = require('../lib/errors');
+const { bad, conflict, notFound, forbidden, AppError } = require('../lib/errors');
 const vtypes = require('../lib/vehicletypes');
 const countries = require('../lib/countries');
 
@@ -125,6 +125,11 @@ async function checkDriver(c, d, date, start, end, ignoreTripIds = [], maxHours)
   if (d.status !== 'active') reasons.push({ ar: 'السائق غير نشط', en: 'Driver is inactive' });
   if (d.license_expiry < date) reasons.push({ ar: 'رخصة السائق منتهية', en: "Driver's license expired" });
   const hits = await calendarClashes(c, 'driver_commitments', 'driver_id', d.id, date, start, end, ignoreTripIds);
+  // the same person may also drive for another company on Sabeel: only "busy" is known, not where
+  const w = await windowOf(c, date, start, end);
+  if ((await c.query(`SELECT driver_busy_elsewhere(app_company_id(), $1, $2::timestamptz - make_interval(mins => ${GAP_MIN}), $3::timestamptz + make_interval(mins => ${GAP_MIN})) b`, [d.id, w.s, w.e])).rows[0].b) {
+    reasons.push({ ar: 'السائق مرتبط برحلة لشركة تانية على سبيل في الفترة دي', en: 'The driver is booked by another company on Sabeel in this period' });
+  }
   for (const h of hits) {
     if (h.kind === 'leave') reasons.push({ ar: 'السائق في ' + (h.note === 'leave' ? 'إجازة' : h.note === 'sick' ? 'إجازة مرضية' : 'راحة'), en: `Driver is on ${h.note}` });
     else if (h.number) reasons.push({ ar: `السائق مشغول في الرحلة ${h.number}`, en: `Driver is busy on trip ${h.number}` });
@@ -585,5 +590,32 @@ define('document.delete', G.fleet, async (ctx, i, c) => {
 define('message.log', G.ops, async (ctx, i, c) => {
   await core.audit(c, ctx, 'notify', V.oneOf(i, 'entity', ['trip', 'booking', 'driver', 'client'], { def: 'trip' }), V.str(i, 'ref', { max: 60, def: '' }), { field: 'channel', before: '', after: V.oneOf(i, 'channel', ['whatsapp', 'sms', 'copy'], { def: 'whatsapp' }) });
 }, { readOnly: false });
+
+/* ===================== DRIVER (own trips only) =====================
+   A driver account sees and works only its own trips in the company it signed in to: list them,
+   start one (odometer) and finish it (odometer, tolls/parking, note). Everything else about the
+   trip (price, client, invoice) stays with the company. */
+const ownTrip = async (c, ctx, id) => {
+  if (!ctx.user.driverId) throw forbidden();
+  const t = (await c.query('SELECT id, driver_id FROM trips WHERE id = $1', [V.uuid({ id }, 'id', { req: true })])).rows[0];
+  if (!t || t.driver_id !== ctx.user.driverId) throw notFound('trip');   // other drivers' trips do not exist for them
+  return t;
+};
+define('me.trips', ['driver'], async (ctx, i, c) => {
+  if (!ctx.user.driverId) throw forbidden();
+  const from = V.date(i, 'from', { def: core.addDays(core.today(), -1) }), to = V.date(i, 'to', { def: core.addDays(core.today(), 14) });
+  const rows = (await c.query(`SELECT t.id, t.number, t.date, t.start_time, t.end_time, t.status, t.from_place, t.to_place, t.pax, t.start_km, t.end_km, v.code vehicle, v.plate_ar, v.plate_en
+      FROM trips t LEFT JOIN vehicles v ON v.id = t.vehicle_id WHERE t.driver_id = $1 AND t.date BETWEEN $2 AND $3 ORDER BY t.starts_at`, [ctx.user.driverId, from, to])).rows;
+  return { trips: rows.map(r => ({ id: r.id, number: r.number, date: r.date, startTime: r.start_time, endTime: r.end_time, status: r.status, from: r.from_place, to: r.to_place, pax: r.pax, startKm: r.start_km, endKm: r.end_km, vehicle: r.vehicle, plate: { ar: r.plate_ar, en: r.plate_en || r.plate_ar } })) };
+}, { readOnly: true });
+define('me.tripStart', ['driver'], async (ctx, i, c) => {
+  const t = await ownTrip(c, ctx, i.id);
+  return actions.get('trip.start').handler(ctx, { id: t.id, odometer: i.odometer }, c);
+});
+define('me.tripComplete', ['driver'], async (ctx, i, c) => {
+  const t = await ownTrip(c, ctx, i.id);
+  const exp = i.expenses || {};
+  return actions.get('trip.complete').handler(ctx, { id: t.id, endKm: i.endKm, expenses: { tolls: exp.tolls, parking: exp.parking }, note: i.note }, c);
+});
 
 module.exports = { createBooking, createClient, assign, routeInfo, checkVehicle, checkDriver };

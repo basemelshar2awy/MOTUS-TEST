@@ -10,6 +10,7 @@ const vtypes = require('../lib/vehicletypes');
 const countries = require('../lib/countries');
 const D = require('../lib/defaults');
 const auth = require('../lib/auth');
+const identity = require('../lib/identity');
 const secrets = require('../lib/secrets');
 const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound, forbidden, AppError } = require('../lib/errors');
@@ -95,25 +96,27 @@ define('vehicleType.create', G.fleet, async (ctx, i, c) => {
   return { id: t.id, code };
 });
 
-/* ---------- users (company scope; users table is filtered by company explicitly) ---------- */
+/* ---------- users: people with access to this company (one Sabeel account each, lib/identity) ---------- */
 async function companyUser(c, ctx, id) {
-  const u = (await c.query('SELECT * FROM users WHERE id = $1 AND company_id = $2 FOR UPDATE', [id, ctx.companyId])).rows[0];
+  const u = (await c.query(`SELECT u.id, u.email, u.phone, u.name_ar, u.name_en, m.id mid, m.role, m.status, m.branch_id FROM memberships m JOIN users u ON u.id = m.user_id
+      WHERE m.user_id = $1 AND m.role <> 'driver' FOR UPDATE OF m`, [id])).rows[0];
   if (!u) throw notFound('user');
+  u.login = u.email || u.phone;
   return u;
 }
 async function adminsLeft(c, ctx, exceptId) {
-  return (await c.query("SELECT count(*)::int n FROM users WHERE company_id = $1 AND role = 'company_admin' AND status = 'active' AND id <> $2", [ctx.companyId, exceptId])).rows[0].n;
+  return (await c.query("SELECT count(*)::int n FROM memberships WHERE role = 'company_admin' AND status = 'active' AND user_id <> $1", [exceptId])).rows[0].n;
 }
 define('user.create', G.admin, async (ctx, i, c) => {
   const email = V.email(i, 'email', { req: true });
   const role = V.oneOf(i, 'role', COMPANY_ROLES, { req: true });
   const name = V.text2(i, 'name', { req: true, max: 120 }), title = V.text2(i, 'title', { max: 120 });
-  if ((await c.query('SELECT 1 FROM users WHERE email = $1', [email])).rowCount) throw conflict('email_taken', 'البريد الإلكتروني مستخدم بالفعل', 'That email address is already in use');
   const branchId = V.uuid(i, 'branchId'); if (branchId) await core.mustExist(c, 'branches', branchId, 'branch');
-  const temp = auth.randomPassword(16);
-  const u = await insert(c, 'users', { company_id: ctx.companyId, email, name_ar: name.ar, name_en: name.en, title_ar: title.ar || '', title_en: title.en || '', role, branch_id: branchId, password_hash: await auth.hashPassword(temp), must_change_password: true, lang: V.oneOf(i, 'lang', ['ar', 'en'], { def: 'ar' }) });
-  await core.audit(c, ctx, 'create', 'user', `${email} (${role})`);
-  return { id: u.id, email, temporaryPassword: temp };
+  // a new email gets a new account; an existing Sabeel account is invited and joins after accepting
+  const acc = await identity.findOrCreate(c, { email, name, lang: V.oneOf(i, 'lang', ['ar', 'en'], { def: 'ar' }) });
+  const m = await identity.addMember(c, ctx, acc, { role, branchId, title });
+  await core.audit(c, ctx, acc.created ? 'create' : 'invite', 'user', `${email} (${role})`);
+  return { id: acc.user.id, email, status: m.status, invited: !acc.created, temporaryPassword: acc.temporaryPassword };
 });
 define('user.update', G.admin, async (ctx, i, c) => {
   const id = V.uuid(i, 'id', { req: true }); const u = await companyUser(c, ctx, id);
@@ -123,18 +126,37 @@ define('user.update', G.admin, async (ctx, i, c) => {
     if (!(await adminsLeft(c, ctx, id))) throw conflict('last_admin', 'لازم يفضل مدير نظام واحد نشط على الأقل', 'At least one active company admin must remain');
   }
   if (id === ctx.user.id && status === 'disabled') throw conflict('self', 'لا يمكنك تعطيل حسابك', 'You cannot disable your own account');
+  if (status === 'active' && u.status === 'invited') throw conflict('invited', 'الدعوة لسه ما اتقبلتش من صاحب الحساب', 'The account owner has not accepted the invitation yet');
   const branchId = P(i, 'branchId', V.uuid); if (branchId) await core.mustExist(c, 'branches', branchId, 'branch');
-  await update(c, 'users', id, defined({ name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined, title_ar: title ? title.ar || '' : undefined, title_en: title ? title.en || '' : undefined, role, status, branch_id: branchId, updated_at: new Date() }));
-  if (status === 'disabled' || (role && role !== u.role)) await c.query('DELETE FROM sessions WHERE user_id = $1', [id]);
-  await core.audit(c, ctx, 'update', 'user', u.email, { field: [role && 'role', status && 'status'].filter(Boolean).join(', '), before: [role && u.role, status && u.status].filter(Boolean).join(', '), after: [role, status].filter(Boolean).join(', ') });
+  // the name belongs to the person's account: a company changes it only when no other company uses that account
+  if (name && (name.ar !== u.name_ar || (name.en || '') !== (u.name_en || ''))) {
+    if (await identity.shared(c, id, ctx.companyId)) throw identity.sharedError();
+    await c.query('UPDATE users SET name_ar = $1, name_en = $2, updated_at = now() WHERE id = $3', [name.ar, name.en || name.ar, id]);
+  }
+  await c.query(`UPDATE memberships SET title_ar = coalesce($1, title_ar), title_en = coalesce($2, title_en), role = coalesce($3, role), status = coalesce($4, status),
+      branch_id = CASE WHEN $5::boolean THEN $6::uuid ELSE branch_id END, updated_at = now() WHERE id = $7`,
+    [title ? title.ar || '' : null, title ? title.en || '' : null, role || null, status || null, branchId !== undefined, branchId || null, u.mid]);
+  if (status === 'disabled' || (role && role !== u.role)) await identity.endSessions(c, id, ctx.companyId);
+  await core.audit(c, ctx, 'update', 'user', u.login, { field: [role && 'role', status && 'status'].filter(Boolean).join(', '), before: [role && u.role, status && u.status].filter(Boolean).join(', '), after: [role, status].filter(Boolean).join(', ') });
 });
 define('user.resetPassword', G.admin, async (ctx, i, c) => {
   const id = V.uuid(i, 'id', { req: true }); const u = await companyUser(c, ctx, id);
+  if (u.status === 'invited') throw conflict('invited', 'الدعوة لسه ما اتقبلتش من صاحب الحساب', 'The account owner has not accepted the invitation yet');
+  if (await identity.shared(c, id, ctx.companyId)) throw identity.sharedError();
   const temp = auth.randomPassword(16);
   await c.query('UPDATE users SET password_hash = $1, must_change_password = true, failed_attempts = 0, locked_until = NULL, password_changed_at = now() WHERE id = $2', [await auth.hashPassword(temp), id]);
   await c.query('DELETE FROM sessions WHERE user_id = $1', [id]);
-  await core.audit(c, ctx, 'update', 'user', u.email, { field: 'password', before: '', after: 'reset' });
-  return { email: u.email, temporaryPassword: temp };
+  await core.audit(c, ctx, 'update', 'user', u.login, { field: 'password', before: '', after: 'reset' });
+  return { email: u.login, temporaryPassword: temp };
+});
+/* take a person's access to this company away (their account and other companies stay) */
+define('user.remove', G.admin, async (ctx, i, c) => {
+  const id = V.uuid(i, 'id', { req: true }); const u = await companyUser(c, ctx, id);
+  if (id === ctx.user.id) throw conflict('self', 'لا يمكنك إزالة حسابك', 'You cannot remove your own access');
+  if (u.role === 'company_admin' && !(await adminsLeft(c, ctx, id))) throw conflict('last_admin', 'لازم يفضل مدير نظام واحد نشط على الأقل', 'At least one active company admin must remain');
+  await c.query('DELETE FROM memberships WHERE id = $1', [u.mid]);
+  await identity.endSessions(c, id, ctx.companyId);
+  await core.audit(c, ctx, 'delete', 'user', `${u.login} (${u.role})`);
 });
 
 /* ---------- Open API keys: shown once, stored as SHA-256 ---------- */

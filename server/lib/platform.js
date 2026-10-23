@@ -52,16 +52,19 @@ async function createCompany(actor, input) {
   try {
     await client.query('BEGIN');
     if ((await client.query('SELECT 1 FROM companies WHERE code = $1', [code])).rowCount) throw conflict('code_taken', 'كود الشركة مستخدم', 'That company code is already in use');
-    if ((await client.query('SELECT 1 FROM users WHERE email = $1', [email])).rowCount) throw conflict('email_taken', 'البريد الإلكتروني مستخدم بالفعل', 'That email address is already in use');
+    // one account per person: an existing member account becomes this company's admin as well
+    const existing = (await client.query('SELECT id, role FROM users WHERE email = $1', [email])).rows[0];
+    if (existing && existing.role === 'super_admin') throw conflict('email_taken', 'البريد ده لحساب في فريق سبيل', 'That email belongs to a Sabeel team account');
     const co = (await client.query('INSERT INTO companies (code, name_ar, name_en, tax_no, currency, country, timezone) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [code, name.ar, name.en, taxNo, V.oneOf(input, 'currency', ['EGP', 'USD', 'EUR', 'SAR'], { def: pack.currency }), country, pack.timezone])).rows[0];
     await client.query("SELECT set_config('app.company_id', $1, true)", [co.id]);
     const branchId = await core.withTz(pack.timezone, () => seedCompany(client, co.id, { branches, country, referencePlaces: input.referencePlaces !== false }));
     await activities.apply(client, co.id, acts, actor ? actor.name : 'setup');
-    const u = (await client.query(`INSERT INTO users (company_id, email, name_ar, name_en, title_ar, title_en, role, branch_id, password_hash, must_change_password)
-      VALUES ($1,$2,$3,$4,'مدير النظام','Company admin','company_admin',$5,$6,$7) RETURNING id`, [co.id, email, adminName.ar, adminName.en, branchId, hash, temporary])).rows[0];
+    const u = existing || (await client.query(`INSERT INTO users (email, name_ar, name_en, role, password_hash, must_change_password, last_company_id)
+      VALUES ($1,$2,$3,'member',$4,$5,$6) RETURNING id`, [email, adminName.ar, adminName.en, hash, temporary, co.id])).rows[0];
+    await client.query(`INSERT INTO memberships (company_id, user_id, role, branch_id, title_ar, title_en, invited_by) VALUES ($1,$2,'company_admin',$3,'مدير النظام','Company admin',$4)`, [co.id, u.id, branchId, actor ? actor.name : 'setup']);
     await client.query("INSERT INTO platform_audit (user_id, actor, action, entity, record_ref, detail) VALUES ($1,$2,'create','company',$3,$4)", [actor ? actor.id : null, actor ? actor.name : 'setup', code, JSON.stringify({ admin: email, activities: acts, country })]);
     await client.query('COMMIT');
-    return { id: co.id, code, country, activities: acts, adminId: u.id, adminEmail: email, temporaryPassword: temporary ? password : null };
+    return { id: co.id, code, country, activities: acts, adminId: u.id, adminEmail: email, existingAccount: !!existing, temporaryPassword: temporary && !existing ? password : null };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw fromPg(e);
@@ -74,7 +77,7 @@ async function setCompanyStatus(actor, id, status) {
   return db.platform(async c => {
     const r = await c.query('UPDATE companies SET status = $1, updated_at = now() WHERE id = $2 RETURNING code', [status, id]);
     if (!r.rowCount) throw notFound('company');
-    if (status === 'suspended') await c.query('DELETE FROM sessions WHERE company_id = $1 OR user_id IN (SELECT id FROM users WHERE company_id = $1)', [id]);
+    if (status === 'suspended') await c.query('DELETE FROM sessions WHERE company_id = $1', [id]);
     await c.query("INSERT INTO platform_audit (user_id, actor, action, entity, record_ref, detail) VALUES ($1,$2,'update','company',$3,$4)", [actor.id, actor.name, r.rows[0].code, JSON.stringify({ status })]);
   });
 }
@@ -128,7 +131,7 @@ async function createSuperAdmin(email, name, password) {
   const hash = await auth.hashPassword(password);
   return db.platform(async c => {
     if ((await c.query('SELECT 1 FROM users WHERE email = $1', [email])).rowCount) throw conflict('email_taken', 'البريد الإلكتروني مستخدم بالفعل', 'That email address is already in use');
-    const u = (await c.query("INSERT INTO users (company_id, email, name_ar, name_en, title_ar, title_en, role, password_hash, must_change_password) VALUES (NULL,$1,$2,$2,'مسؤول المنصة','Platform admin','super_admin',$3,false) RETURNING id", [email, name, hash])).rows[0];
+    const u = (await c.query("INSERT INTO users (email, name_ar, name_en, role, password_hash, must_change_password) VALUES ($1,$2,$2,'super_admin',$3,false) RETURNING id", [email, name, hash])).rows[0];
     await c.query("INSERT INTO platform_audit (user_id, actor, action, entity, record_ref) VALUES ($1,'console','create','super_admin',$2)", [u.id, email]);
     return u.id;
   });

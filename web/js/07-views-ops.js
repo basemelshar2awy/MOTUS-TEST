@@ -197,6 +197,29 @@
   });
 
   /* ================= TRIPS ================= */
+  /* ================= DRIVER: MY TRIPS (driver accounts see only their own trips) ================= */
+  U.route('mytrips', () => {
+    const db = U.db(), today = M.TODAY;
+    const veh = id => db.vehicles.find(v => v.id === id);
+    const trips = db.trips.filter(t => ['scheduled', 'running'].includes(t.status) || t.date >= M.addDays(today, -1)).sort((a, b) => (a.startsAt || '') < (b.startsAt || '') ? -1 : 1);
+    const card = t => {
+      const v = veh(t.vehicleId);
+      const act = t.status === 'scheduled' ? U.btn(tt('ابدأ الرحلة', 'Start trip'), 'my-start', '', 'arrow', `data-id="${t.id}"`) : t.status === 'running' ? U.btn(tt('إنهاء الرحلة', 'Finish trip'), 'my-finish', '', 'check', `data-id="${t.id}"`) : '';
+      return U.card(null, `<div class="my-trip"><div><div class="muted small">${M.esc(t.number)} · ${M.date(t.date)} · <span class="num">${t.startTime}–${t.endTime}</span>${t.endsAt && t.endsAt.slice(0, 10) !== t.date ? ' ' + U.badge(tt('بتخلص اليوم التالي', 'ends next day'), 'warning') : ''}</div>
+        <div class="route">${M.esc(U.place(t.from))} ← ${M.esc(U.place(t.to))}</div>
+        <div class="muted small">${v ? `${M.esc(v.code)} · <span class="ltr">${M.esc(M.L(v.plate))}</span>` : ''}${t.pax ? ` · ${t.pax} ${tt('راكب', 'pax')}` : ''}</div></div>
+        <div class="actions">${U.status(t.status)} ${act}</div></div>`);
+    };
+    const name = db.drivers[0] ? M.L(db.drivers[0].name) : '';
+    return U.head(tt('رحلاتي', 'My trips'), `${M.esc(name)} · ${M.esc(M.L(U.company().name))}`) +
+      (trips.length ? `<div class="my-trips">${trips.map(card).join('')}</div>` : U.card(null, U.empty('bus', tt('مفيش رحلات عليك دلوقتي', 'No trips assigned to you right now'), tt('الرحلات اللي الشركة بتحطك عليها بتظهر هنا.', 'Trips the company assigns to you appear here.'))));
+  });
+  U.act('my-start', el => { const t = U.find('trips', el.dataset.id); const v = U.db().vehicles.find(x => x.id === t.vehicleId);
+    U.formModal(tt('بدء الرحلة', 'Start trip') + ' · ' + t.number, [{ f: 'odometer', label: tt('عداد البداية (كم)', 'Start odometer (km)'), type: 'number', value: v ? v.odometer : '', req: true }], 'me.tripStart', { map: x => ({ id: t.id, odometer: Number(x.odometer) }), ok: tt('بدأت الرحلة', 'Trip started') }); });
+  U.act('my-finish', el => { const t = U.find('trips', el.dataset.id);
+    U.formModal(tt('إنهاء الرحلة', 'Finish trip') + ' · ' + t.number, [{ f: 'endKm', label: tt('عداد النهاية (كم)', 'End odometer (km)'), type: 'number', req: true }, { f: 'tolls', label: tt('رسوم طرق', 'Tolls'), type: 'number', value: 0 }, { f: 'parking', label: tt('انتظار', 'Parking'), type: 'number', value: 0 }],
+      'me.tripComplete', { map: x => ({ id: t.id, endKm: Number(x.endKm), expenses: { tolls: Number(x.tolls) || 0, parking: Number(x.parking) || 0 } }), ok: tt('انتهت الرحلة', 'Trip finished') }); });
+
   U.route('trips', () => {
     const db = U.db(); const P = U.periodRange();
     const rows = db.trips.filter(t => t.date >= P.from && t.date <= M.addDays(M.TODAY, 7)).sort((a, b) => (a.date + a.startTime) < (b.date + b.startTime) ? 1 : -1);

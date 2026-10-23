@@ -1,4 +1,12 @@
 # Changelog
+## Unreleased — one Sabeel account per person
+- An account is the person (email and/or mobile number, password, language); a membership gives it a role in a company. One account can work for several companies with a different role in each, and switch between them from the top bar.
+- Adding someone whose email or mobile already has a Sabeel account sends an invitation; the person accepts or declines after signing in. A company cannot reset the password or change the name of an account other companies also use.
+- Drivers: the company creates or links a driver-app account (mobile number, stored in international form). A driver signs in with the mobile number and sees only their own trips (start / finish); every other page and API route is closed to them.
+- One driver linked to two companies cannot be booked by both for the same time: the second company is told the driver is busy with another company on Sabeel, without any detail of that company.
+- Users screen: invitations awaiting acceptance, remove a person from the company (their account and other companies stay). Driver page: driver-app account, create/link and unlink.
+- Migration `007_identity.sql`: each existing user keeps signing in as before; its company, role, branch, title and status move to a membership.
+
 ## Unreleased — country packs (Egypt, Saudi Arabia)
 - A company belongs to one country (`EG` or `SA`). Its country pack sets the currency (EGP / SAR), VAT (14% / 15%), the e-invoice authority (ETA / ZATCA), the time zone (Cairo / Riyadh), identity fields and their formats (tax no., commercial register, national ID / Iqama), driving-license classes, starting prices and the starting places and routes.
 - Chosen when the company is created (Egypt by default). The Sabeel team can change it from the platform screen until the company issues its first invoice; after that it is locked (also by a database trigger). A company working in two countries is two companies.

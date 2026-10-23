@@ -73,7 +73,7 @@ async function partA() {
     assert(r.status === 0, (r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ')); return (r.stdout.match(/applied /g) || []).length + ' migration(s) applied';
   });
   await check('at least one active administrator exists', async () => {
-    const r = (await app.query("SELECT count(*) FILTER (WHERE role = 'super_admin')::int sa, count(*) FILTER (WHERE role = 'company_admin')::int ca FROM users WHERE status = 'active'")).rows[0];
+    const r = (await app.query('SELECT platform_admins sa, company_admins ca FROM admin_counts()')).rows[0];
     assert(r.sa + r.ca > 0, 'no administrator yet - run the database setup script or server/tools/create-admin.js'); return `${r.sa} platform admin(s), ${r.ca} company admin(s)`;
   });
   await check('data source is PostgreSQL (nothing is kept in memory)', async () => { const r = (await app.query('SELECT count(*)::int n FROM information_schema.tables WHERE table_schema = \'public\'')).rows[0].n; assert(r > 60, 'schema looks incomplete'); return `${r} tables at ${cfg.db.host}:${cfg.db.port}/${cfg.db.database}`; });

@@ -8,6 +8,7 @@ const { bad, conflict, notFound } = require('../lib/errors');
 const { CRITICAL_ITEMS, INSPECTION_ITEMS } = require('../lib/defaults');
 const vtypes = require('../lib/vehicletypes');
 const countries = require('../lib/countries');
+const identity = require('../lib/identity');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -158,6 +159,33 @@ define('driver.update', G.ops, async (ctx, i, c) => {
     else if (old.vehicle_id) await setDriver(c, ctx, old.vehicle_id, null);
   }
   await core.audit(c, ctx, 'update', 'driver', old.code, { field: Object.keys(f).join(', ') });
+});
+
+/* ---------- driver accounts: the driver signs in to the Sabeel driver app with one account (lib/identity).
+   A new mobile/email → a new account with a temporary password; a driver who already has a Sabeel
+   account (another company) gets an invitation and joins after accepting. ---------- */
+define('driver.account', G.ops, async (ctx, i, c) => {
+  const id = V.uuid(i, 'driverId', { req: true });
+  const d = await core.lock(c, 'drivers', id, 'driver');
+  const co = await core.company(c, ctx);
+  const rawPhone = has(i, 'phone') ? V.str(i, 'phone', { max: 30 }) : d.phone;
+  const phone = rawPhone ? countries.normalizePhone(rawPhone, co.country) : null;
+  if (rawPhone && !phone) throw bad('phone', 'رقم الموبايل غير صحيح', 'Invalid mobile number', 'phone');
+  const email = V.email(i, 'email');
+  if (!phone && !email) throw bad('login', 'اكتب رقم موبايل السائق أو بريده', "Enter the driver's mobile number or email", 'phone');
+  if ((await c.query('SELECT 1 FROM memberships WHERE driver_id = $1', [id])).rowCount) throw conflict('has_account', 'السائق ده عنده حساب بالفعل', 'This driver already has an account');
+  const acc = await identity.findOrCreate(c, { email, phone, name: { ar: d.name_ar, en: d.name_en || d.name_ar } });
+  const m = await identity.addMember(c, ctx, acc, { role: 'driver', driverId: id });
+  await core.audit(c, ctx, acc.created ? 'create' : 'invite', 'driver_account', `${d.code} ${phone || email}`);
+  return { driverId: id, login: phone || email, status: m.status, invited: !acc.created, temporaryPassword: acc.temporaryPassword };
+});
+define('driver.unlink', G.ops, async (ctx, i, c) => {
+  const id = V.uuid(i, 'driverId', { req: true });
+  const d = await core.lock(c, 'drivers', id, 'driver');
+  const m = (await c.query('DELETE FROM memberships WHERE driver_id = $1 RETURNING user_id', [id])).rows[0];
+  if (!m) throw notFound('account');
+  await identity.endSessions(c, m.user_id, ctx.companyId);
+  await core.audit(c, ctx, 'delete', 'driver_account', d.code);
 });
 
 /* ===================== FUEL ===================== */
