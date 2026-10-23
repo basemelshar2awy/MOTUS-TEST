@@ -8,6 +8,7 @@ const core = require('../lib/core');
 const auth = require('../lib/auth');
 const erp = require('../lib/erp');
 const registry = require('../services/registry');
+const activities = require('../lib/activities');
 const tracking = require('../services/tracking');
 const { AppError, bad, notFound, fromPg } = require('../lib/errors');
 const { json, send } = require('../lib/http');
@@ -138,7 +139,7 @@ async function handle(req, res, url, ip) {
     const method = req.method;
     let out;
 
-    if (name === 'ping' && method === 'GET') out = { ok: true, companyId: k.companyId, scopes: k.scopes, serverTime: new Date().toISOString() };
+    if (name === 'ping' && method === 'GET') out = { ok: true, companyId: k.companyId, scopes: k.scopes, activities: await db.read(k.companyId, c => activities.enabled(c, {})), serverTime: new Date().toISOString() };
     else if (name === 'journal') {
       need(k, 'journal', method === 'GET' ? 'read' : 'write');
       if (method === 'GET' && !a) {
@@ -175,6 +176,9 @@ async function handle(req, res, url, ip) {
       out = { data: await db.read(k.companyId, c => REPORTS[a](c, q)) };
     } else if (RES[name]) {
       const r = RES[name];
+      // resources of an activity the company does not have are refused (reads too)
+      const own = activities.scopeActivity(r.scope);
+      if (own && !(await db.read(k.companyId, c => activities.enabled(c, {}))).includes(own)) throw activities.disabledError(own);
       if (method === 'GET' && !a) out = await list(k, name, q);
       else if (method === 'GET' && a) out = await one(k, name, a);
       else if (method === 'POST' && !a && r.create) { need(k, r.scope, 'write'); out = await act(k, req, r.create, await json(req)); }

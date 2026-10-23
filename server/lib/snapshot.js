@@ -7,6 +7,7 @@
    of the snapshot (they stay in the database, in reports API and exports). */
 const db = require('./db');
 const core = require('./core');
+const activities = require('./activities');
 
 const HISTORY_DAYS = parseInt(process.env.MOTUS_HISTORY_DAYS || '400', 10);
 const L = (r, f) => ({ ar: r[f + '_ar'] || r[f + '_en'] || '', en: r[f + '_en'] || r[f + '_ar'] || '' });
@@ -25,6 +26,8 @@ async function load(companyId) {
     const st = (await q('SELECT data, closed_through, data_version FROM company_settings WHERE company_id = $1', [companyId]))[0] || { data: {}, data_version: 0 };
     const settings = Object.assign({}, core.DEFAULT_SETTINGS, st.data, { closedThrough: st.closed_through });
     const D = {};
+    const acts = await activities.enabled(c, {});
+    const tourism = acts.includes('tourism');
 
     D.branches = (await q('SELECT * FROM branches ORDER BY code')).map(r => Object.assign(base(r), { code: r.code, city: r.city, name: L(r, 'name') }));
     const vtypes = await q('SELECT * FROM vehicle_types ORDER BY array_position(ARRAY[\'LB\',\'MB\',\'MC\',\'SD\'], code)');
@@ -46,8 +49,9 @@ async function load(companyId) {
     D.clients = (await q('SELECT * FROM clients ORDER BY code')).map(r => Object.assign(base(r), { code: r.code, name: L(r, 'name'), type: r.type, taxNo: r.tax_no, crNo: r.cr_no, contact: L(r, 'contact'), phone: r.phone, email: r.email, address: L(r, 'address'), terms: r.terms, creditLimit: N(r.credit_limit), currency: r.currency, status: r.status }));
     D.suppliers = (await q('SELECT * FROM suppliers ORDER BY code')).map(r => Object.assign(base(r), { code: r.code, name: L(r, 'name'), category: r.category, taxNo: r.tax_no, phone: r.phone, terms: r.terms }));
 
-    const progs = await q('SELECT * FROM programs WHERE end_date >= $1 OR status IN (\'confirmed\',\'running\',\'tentative\') ORDER BY start_date', [since]);
-    const pdays = await q('SELECT * FROM program_days ORDER BY program_id, day');
+    // tour programs belong to the tourism activity: not loaded at all when it is off
+    const progs = tourism ? await q('SELECT * FROM programs WHERE end_date >= $1 OR status IN (\'confirmed\',\'running\',\'tentative\') ORDER BY start_date', [since]) : [];
+    const pdays = tourism ? await q('SELECT * FROM program_days ORDER BY program_id, day') : [];
     D.programs = progs.map(r => Object.assign(base(r), {
       number: r.number, name: L(r, 'name'), clientId: r.client_id, start: r.start_date, end: r.end_date, pax: r.pax, price: N(r.price), vehicleId: r.vehicle_id, driverId: r.driver_id,
       guide: L(r, 'guide'), guidePhone: r.guide_phone, status: r.status, bookingId: r.booking_id,
@@ -141,8 +145,16 @@ async function load(companyId) {
     D.aiUsage = (await q('SELECT * FROM ai_usage WHERE date >= $1 ORDER BY date DESC', [core.addDays(today, -90)])).map(r => ({ date: r.date, feature: r.feature, requests: r.requests, tokens: r.tokens }));
     D.aiConversations = (await q('SELECT id, user_id, title, created_at FROM ai_conversations ORDER BY created_at DESC LIMIT 200')).map(r => ({ id: r.id, userId: r.user_id, title: { ar: r.title, en: r.title }, at: core.fmtTs(r.created_at).slice(0, 10) }));
 
+    if (!tourism) {
+      // tourism-only fields of shared records (flight, passport, nationality, hotel) are left out
+      D.trips.forEach(t => { t.flight = null; t.flightStatus = null; });
+      D.bookings.forEach(b => { b.flight = null; });
+      D.passengers = D.passengers.map(p => Object.assign({}, p, { nationality: '', passportNo: '', hotel: '' }));
+    }
+
     D.settings = settings;
     return {
+      activities: acts,
       version: Number(st.data_version), loadedAt: Date.now(), today,
       company: { id: co.id, code: co.code, name: L(co, 'name'), taxNo: co.tax_no, currency: co.currency, fyStart: co.fy_start, status: co.status, createdAt: core.fmtTs(co.created_at).slice(0, 10) },
       data: D,
@@ -161,7 +173,7 @@ function forRole(snap, role, userId) {
     D.passengers = D.passengers.map(p => Object.assign({}, p, { passportNo: p.passportNo ? p.passportNo.slice(0, 2) + '•••••' + p.passportNo.slice(-2) : '' }));
   }
   D.aiConversations = D.aiConversations.filter(cv => cv.userId === userId || ADMIN.includes(role));
-  return { version: snap.version, today: snap.today, company: snap.company, data: D };
+  return { version: snap.version, today: snap.today, company: snap.company, activities: snap.activities, activityCatalog: activities.CATALOG, data: D };
 }
 
 /* cached per company; reused only while the data version is unchanged and the day has not rolled */

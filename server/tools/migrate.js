@@ -47,8 +47,8 @@ async function grantApp(c, appUser) {
   await q(`REVOKE ALL ON schema_migrations FROM ${appUser}`);
   await q(`GRANT SELECT ON schema_migrations TO ${appUser}`);
   // history tables are append-only for the application
-  await q(`REVOKE UPDATE, DELETE ON audit_log, stock_movements, platform_audit FROM ${appUser}`);
-  await q(`GRANT EXECUTE ON FUNCTION api_key_lookup(text), provider_lookup(uuid), webhook_due_companies(), company_counts() TO ${appUser}`);
+  await q(`REVOKE UPDATE, DELETE ON audit_log, stock_movements, platform_audit, company_activity_events FROM ${appUser}`);
+  await q(`GRANT EXECUTE ON FUNCTION api_key_lookup(text), provider_lookup(uuid), webhook_due_companies(), company_counts(), company_activity_list() TO ${appUser}`);
 }
 
 async function main() {

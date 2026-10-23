@@ -71,10 +71,16 @@ M.rng = function (seed) {
    snap = { today, company, data: {...collections, vehicleTypes, geofences, routes, settings} } */
 M.db = {};
 M.companies = [];
+/* company activities (tourism, education, intercity, staff, cargo): the server decides; the UI only hides */
+M.activities = [];
+M.activityCatalog = [];
+M.has = code => !code || M.activities.includes(code);
 M.vehicleClasses = {}; M.places = {}; M.routes = {}; M.fuelPrice = { diesel: 0, gasoline: 0 };
 M.applySnapshot = snap => {
   const D = snap.data, cid = snap.company.id;
   M.TODAY = snap.today;
+  M.activities = snap.activities || [];
+  M.activityCatalog = snap.activityCatalog || [];
   M.currency = snap.company.currency || 'EGP';
   M.db = {}; M.db[cid] = D;
   M.vehicleClasses = {};

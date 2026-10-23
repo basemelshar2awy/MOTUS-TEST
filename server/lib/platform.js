@@ -6,6 +6,7 @@ const auth = require('./auth');
 const core = require('./core');
 const V = require('./validate');
 const D = require('./defaults');
+const activities = require('./activities');
 const { bad, conflict, notFound, fromPg } = require('./errors');
 
 async function seedCompany(c, companyId, opts) {
@@ -31,7 +32,8 @@ async function seedCompany(c, companyId, opts) {
   return first;
 }
 
-/* input: { code, name: {ar,en}, taxNo, currency, branches?, admin: { email, name, password? } } */
+/* input: { code, name: {ar,en}, taxNo, currency, activities: ['tourism', ...], branches?, admin: { email, name, password? } }
+   activities: one or more of activities.CODES. Left out (older callers, console tools) = ['tourism']. */
 async function createCompany(actor, input) {
   const code = V.str(input, 'code', { req: true, max: 8, re: /^[A-Z0-9]{2,8}$/ });
   const name = V.text2(input, 'name', { req: true, max: 160 });
@@ -43,6 +45,7 @@ async function createCompany(actor, input) {
   const temporary = !password;
   if (!password) password = auth.randomPassword(16);
   const hash = await auth.hashPassword(password);
+  const acts = activities.parseList(input, 'activities', { required: false }) || ['tourism'];
   const branches = V.arr(input, 'branches', { max: 20 }).map(b => ({ code: V.str(b, 'code', { req: true, max: 12, re: /^[A-Z0-9-]+$/ }), city: V.str(b, 'city', { req: true, max: 12 }), ar: V.str(b, 'nameAr', { req: true, max: 120 }), en: V.str(b, 'nameEn', { max: 120 }) }));
   const client = await db.pool.connect();
   try {
@@ -52,11 +55,12 @@ async function createCompany(actor, input) {
     const co = (await client.query('INSERT INTO companies (code, name_ar, name_en, tax_no, currency) VALUES ($1,$2,$3,$4,$5) RETURNING id', [code, name.ar, name.en, V.str(input, 'taxNo', { max: 30, def: '' }), V.oneOf(input, 'currency', ['EGP', 'USD', 'EUR', 'SAR'], { def: 'EGP' })])).rows[0];
     await client.query("SELECT set_config('app.company_id', $1, true)", [co.id]);
     const branchId = await seedCompany(client, co.id, { branches, referencePlaces: input.referencePlaces !== false });
+    await activities.apply(client, co.id, acts, actor ? actor.name : 'setup');
     const u = (await client.query(`INSERT INTO users (company_id, email, name_ar, name_en, title_ar, title_en, role, branch_id, password_hash, must_change_password)
       VALUES ($1,$2,$3,$4,'مدير النظام','Company admin','company_admin',$5,$6,$7) RETURNING id`, [co.id, email, adminName.ar, adminName.en, branchId, hash, temporary])).rows[0];
-    await client.query("INSERT INTO platform_audit (user_id, actor, action, entity, record_ref, detail) VALUES ($1,$2,'create','company',$3,$4)", [actor ? actor.id : null, actor ? actor.name : 'setup', code, JSON.stringify({ admin: email })]);
+    await client.query("INSERT INTO platform_audit (user_id, actor, action, entity, record_ref, detail) VALUES ($1,$2,'create','company',$3,$4)", [actor ? actor.id : null, actor ? actor.name : 'setup', code, JSON.stringify({ admin: email, activities: acts })]);
     await client.query('COMMIT');
-    return { id: co.id, code, adminId: u.id, adminEmail: email, temporaryPassword: temporary ? password : null };
+    return { id: co.id, code, activities: acts, adminId: u.id, adminEmail: email, temporaryPassword: temporary ? password : null };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw fromPg(e);
@@ -74,11 +78,29 @@ async function setCompanyStatus(actor, id, status) {
   });
 }
 
+/* super admin (Sabeel team) changes a company's activities after talking to the customer */
+async function setActivities(actor, id, input) {
+  if (!V.UUID.test(String(id))) throw notFound('company');
+  const list = activities.parseList(input, 'activities');
+  const code = await db.platform(async c => { const r = await c.query('SELECT code FROM companies WHERE id = $1', [id]); if (!r.rowCount) throw notFound('company'); return r.rows[0].code; });
+  const change = await db.tx(id, async c => {
+    const ch = await activities.apply(c, id, list, actor.name);
+    if (ch.enabled.length || ch.disabled.length) await c.query('UPDATE company_settings SET data_version = data_version + 1, updated_at = now() WHERE company_id = $1', [id]);
+    return ch;
+  });
+  if (change.enabled.length || change.disabled.length) {
+    await db.platform(c => c.query("INSERT INTO platform_audit (user_id, actor, action, entity, record_ref, detail) VALUES ($1,$2,'update','company_activities',$3,$4)", [actor.id, actor.name, code, JSON.stringify({ activities: list, enabled: change.enabled, disabled: change.disabled })]));
+  }
+  return { activities: list, enabled: change.enabled, disabled: change.disabled };
+}
+
 async function listCompanies() {
   return db.platform(async c => {
     const cos = (await c.query('SELECT id, code, name_ar, name_en, status, created_at FROM companies ORDER BY code')).rows;
     const counts = Object.fromEntries((await c.query('SELECT * FROM company_counts()')).rows.map(r => [r.company_id, r]));
-    return cos.map(x => ({ id: x.id, code: x.code, name: { ar: x.name_ar, en: x.name_en || x.name_ar }, status: x.status, createdAt: core.fmtTs(x.created_at).slice(0, 10), vehicles: (counts[x.id] || {}).vehicles || 0, drivers: (counts[x.id] || {}).drivers || 0, users: (counts[x.id] || {}).users || 0, bookings: (counts[x.id] || {}).bookings || 0 }));
+    const acts = {};
+    (await c.query('SELECT * FROM company_activity_list()')).rows.forEach(r => { (acts[r.company_id] = acts[r.company_id] || []).push(r.activity); });
+    return cos.map(x => ({ id: x.id, code: x.code, name: { ar: x.name_ar, en: x.name_en || x.name_ar }, status: x.status, createdAt: core.fmtTs(x.created_at).slice(0, 10), vehicles: (counts[x.id] || {}).vehicles || 0, drivers: (counts[x.id] || {}).drivers || 0, users: (counts[x.id] || {}).users || 0, bookings: (counts[x.id] || {}).bookings || 0, activities: activities.CODES.filter(a => (acts[x.id] || []).includes(a)) }));
   });
 }
 
@@ -94,4 +116,4 @@ async function createSuperAdmin(email, name, password) {
   });
 }
 
-module.exports = { createCompany, setCompanyStatus, listCompanies, createSuperAdmin, seedCompany };
+module.exports = { createCompany, setCompanyStatus, setActivities, listCompanies, createSuperAdmin, seedCompany };

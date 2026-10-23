@@ -3,6 +3,7 @@
    X-Requested-With header, and (when sent) an Origin that matches this site. */
 const crypto = require('crypto');
 const db = require('../lib/db');
+const activities = require('../lib/activities');
 const core = require('../lib/core');
 const log = require('../lib/log');
 const secrets = require('../lib/secrets');
@@ -61,6 +62,8 @@ async function sessionPayload(u) {
       if (r) { out.company = { id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar }, currency: r.currency }; out.companies = [out.company]; }
     }
   });
+  out.activityCatalog = activities.CATALOG;
+  if (out.company) out.company.activities = await db.read(out.company.id, c => activities.enabled(c, {}));
   return out;
 }
 router.add('GET', '/api/session', async (req, res) => send(res, 200, await sessionPayload(await currentUser(req))));
@@ -149,6 +152,12 @@ router.add('POST', '/api/erp/push', async (req, res) => {
 const superOnly = async req => { const u = await requireUser(req); if (u.role !== 'super_admin') throw forbidden(); return u; };
 router.add('GET', '/api/platform/companies', async (req, res) => { await superOnly(req); send(res, 200, { companies: await platform.listCompanies() }); });
 router.add('POST', '/api/platform/companies', async (req, res) => { const u = await superOnly(req); send(res, 201, await platform.createCompany(u, await json(req, 64 * 1024))); });
+router.add('POST', '/api/platform/companies/:id/activities', async (req, res, p) => {
+  const u = await superOnly(req);
+  const out = await platform.setActivities(u, p.id, await json(req, 4096));
+  snapshot.invalidate(p.id);
+  send(res, 200, out);
+});
 router.add('POST', '/api/platform/companies/:id/status', async (req, res, p) => { const u = await superOnly(req); await platform.setCompanyStatus(u, p.id, (await json(req, 1024)).status); send(res, 200, { ok: true }); });
 
 /* ---------- inbound provider webhooks (HMAC signed with the connection's secret) ---------- */
