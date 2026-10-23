@@ -28,6 +28,8 @@ const RES = {
   suppliers: { table: 'suppliers', scope: 'suppliers', create: 'supplier.create', update: 'supplier.update' },
   workorders: { table: 'work_orders', scope: 'workorders', create: 'wo.create', update: 'wo.update', actions: { close: 'wo.close', cancel: 'wo.cancel' } },
   fuel: { table: 'fuel_records', scope: 'fuel', create: 'fuel.create' },
+  // lines (education, staff, intercity): POST /lines/{id}/generate creates the coming runs
+  lines: { table: 'lines', scope: 'lines', create: 'line.create', update: 'line.update', actions: { generate: 'line.generate' } },
   // operating contracts: POST /contracts/{id}/trips confirms a finished trip (idempotent by externalRef)
   contracts: { table: 'contracts', scope: 'contracts', create: 'contract.create', update: 'contract.update', actions: { trips: 'contract.trip', end: 'contract.end', bill: 'contract.bill' } },
   stock: { table: 'stock_movements', scope: 'stock', post: { receipts: 'stock.receipt', adjustments: 'stock.adjust', transfers: 'stock.transfer' } },

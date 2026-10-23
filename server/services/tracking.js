@@ -10,11 +10,11 @@ const { bad, conflict, notFound } = require('../lib/errors');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
-const KINDS = ['city', 'airport', 'site', 'hotel', 'garage', 'client', 'restricted'];
+const KINDS = Object.keys(require('../lib/profiles').PLACE_KINDS);   // which of them a company may use: activities.gate
 
 define('place.create', G.ops, async (ctx, i, c) => {
   const name = V.text2(i, 'name', { req: true, max: 120 });
-  const p = await insert(c, 'places', { company_id: ctx.companyId, code: V.str(i, 'code', { req: true, max: 12, re: /^[A-Z0-9-]+$/ }), name_ar: name.ar, name_en: name.en, kind: V.oneOf(i, 'kind', KINDS, { def: 'site' }), lat: V.num(i, 'lat', { req: true, min: -90, max: 90 }), lng: V.num(i, 'lng', { req: true, min: -180, max: 180 }), radius_m: V.int(i, 'radiusM', { min: 20, max: 50000, def: 500 }), created_by: ctx.user.name });
+  const p = await insert(c, 'places', { company_id: ctx.companyId, code: V.str(i, 'code', { req: true, max: 12, re: /^[A-Z0-9-]+$/ }), name_ar: name.ar, name_en: name.en, kind: V.oneOf(i, 'kind', KINDS, { def: 'city' }), lat: V.num(i, 'lat', { req: true, min: -90, max: 90 }), lng: V.num(i, 'lng', { req: true, min: -180, max: 180 }), radius_m: V.int(i, 'radiusM', { min: 20, max: 50000, def: 500 }), created_by: ctx.user.name });
   await core.audit(c, ctx, 'create', 'geofence', p.code);
   return { id: p.id };
 });

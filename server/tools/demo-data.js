@@ -16,7 +16,7 @@ const platform = require('../lib/platform');
 const snapshot = require('../lib/snapshot');
 const { fromPg } = require('../lib/errors');
 const registry = require('../services/registry');
-['fleet', 'ops', 'finance', 'contracts', 'inventory', 'tracking', 'providers', 'admin'].forEach(m => require('../services/' + m));
+['fleet', 'ops', 'finance', 'contracts', 'lines', 'inventory', 'tracking', 'providers', 'admin'].forEach(m => require('../services/' + m));
 const { seed } = require('./lib/sample-data');
 
 function args() {

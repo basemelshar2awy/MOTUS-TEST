@@ -4,10 +4,14 @@
 const { define, G, actions } = require('./registry');
 const V = require('../lib/validate');
 const core = require('../lib/core');
+const db = require('../lib/db');
 const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound, forbidden, AppError } = require('../lib/errors');
 const vtypes = require('../lib/vehicletypes');
 const countries = require('../lib/countries');
+const profiles = require('../lib/profiles');
+const activities = require('../lib/activities');
+const auth = require('../lib/auth');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -19,7 +23,7 @@ const fromMin = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${Stri
 function clientFields(i) {
   const name = P(i, 'name', V.text2, { max: 160 }), contact = P(i, 'contact', V.text2, { max: 120 }), address = P(i, 'address', V.text2, { max: 300 });
   return defined({
-    name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined, type: P(i, 'type', V.oneOf, ['agency', 'hotel', 'company', 'individual']),
+    name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined, type: P(i, 'type', V.oneOf, Object.keys(profiles.CLIENT_TYPES)),
     tax_no: P(i, 'taxNo', V.str, { max: 30, def: '' }), cr_no: P(i, 'crNo', V.str, { max: 30, def: '' }),
     contact_ar: contact ? contact.ar : undefined, contact_en: contact ? contact.en : undefined, phone: P(i, 'phone', V.str, { max: 30, def: '' }),
     email: has(i, 'email') ? (V.email(i, 'email') || '') : undefined, address_ar: address ? address.ar : undefined, address_en: address ? address.en : undefined,
@@ -27,7 +31,10 @@ function clientFields(i) {
     status: P(i, 'status', V.oneOf, ['active', 'inactive']), external_ref: P(i, 'externalRef', V.str, { max: 80 }),
   });
 }
+/* client types follow the company's activities (a school only where education is on, ...) */
+async function clientTypes(c, ctx) { return [...new Set((await activities.enabled(c, ctx)).flatMap(a => (profiles.PROFILES[a] || { clientTypes: [] }).clientTypes))]; }
 async function clientCountryChecks(c, ctx, f) {
+  if (f.type) { const ok = await clientTypes(c, ctx); if (!ok.includes(f.type)) throw bad('type', 'نوع العميل ده مش من أنشطة شركتك', 'This client type is not one of your activities', 'type'); }
   const country = (await core.company(c, ctx)).country;
   countries.check(country, 'taxNo', f.tax_no, 'taxNo'); countries.check(country, 'crNo', f.cr_no, 'crNo');
 }
@@ -36,7 +43,7 @@ async function createClient(ctx, i, c) {
   await clientCountryChecks(c, ctx, f);
   if (!f.currency) f.currency = (await core.company(c, ctx)).currency;
   if (!f.name_ar) throw bad('required', 'اسم العميل مطلوب', 'The client name is required', 'name');
-  f.type = f.type || 'company';
+  f.type = f.type || (await clientTypes(c, ctx))[0] || 'company';
   let code = V.str(i, 'code', { max: 20 });
   if (!code) { const n = (await c.query('SELECT count(*)::int n FROM clients')).rows[0].n; for (let k = n + 1; ; k++) { code = `CL-${String(k).padStart(3, '0')}`; if (!(await c.query('SELECT 1 FROM clients WHERE code = $1', [code])).rowCount) break; } }
   if (f.terms == null) f.terms = (await core.settings(c, ctx)).defaultTerms;
@@ -106,7 +113,7 @@ async function calendarClashes(c, table, col, id, date, start, end, ignoreTripId
        AND NOT (k.source_type = 'trip' AND k.source_id = ANY($4::uuid[]))
      ORDER BY lower(k.during)`, [id, w.s, w.e, ignoreTripIds])).rows;
 }
-async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loadKg) {
+async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loadKg, ownContract) {
   const reasons = [];
   if (['maintenance', 'stopped', 'sold'].includes(v.status)) reasons.push({ ar: 'المركبة غير متاحة (' + v.status + ')', en: `Vehicle is not available (${v.status})` });
   if (pax && v.seats > 0 && v.seats < pax) reasons.push({ ar: `السعة ${v.seats} أقل من ${pax} راكب`, en: `Capacity ${v.seats} is below ${pax} passengers` });
@@ -114,7 +121,7 @@ async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loa
   if (loadKg && Number(v.payload_kg) < loadKg) reasons.push({ ar: `الحمولة ${Number(v.payload_kg)} كجم أقل من ${loadKg} كجم`, en: `Payload ${Number(v.payload_kg)} kg is below ${loadKg} kg` });
   if (v.license_expiry && v.license_expiry < date) reasons.push({ ar: 'رخصة المركبة منتهية', en: 'Vehicle license expired' });
   if (v.insurance_expiry && v.insurance_expiry < date) reasons.push({ ar: 'تأمين المركبة منتهي', en: 'Vehicle insurance expired' });
-  const ex = await require('./contracts').exclusiveClash(c, 'vehicle_id', v.id, date, start, end);
+  const ex = await require('./contracts').exclusiveClash(c, 'vehicle_id', v.id, date, start, end, ownContract);
   if (ex) reasons.push({ ar: `المركبة متعاقدة حصرياً (عقد ${ex.number}) من ${ex.work_start} لـ ${ex.work_end}`, en: `The vehicle is on exclusive contract ${ex.number} (${ex.work_start}–${ex.work_end})` });
   const hit = (await calendarClashes(c, 'vehicle_commitments', 'vehicle_id', v.id, date, start, end, ignoreTripIds))[0];
   if (hit) reasons.push(hit.number
@@ -122,12 +129,12 @@ async function checkVehicle(c, v, date, start, end, ignoreTripIds = [], pax, loa
     : { ar: `المركبة ${(KIND[hit.kind] || [hit.kind])[0]} في الفترة دي ${hit.note}`.trim(), en: `Vehicle is ${(KIND[hit.kind] || [, hit.kind])[1]} in this period ${hit.note}`.trim() });
   return reasons;
 }
-async function checkDriver(c, d, date, start, end, ignoreTripIds = [], maxHours) {
+async function checkDriver(c, d, date, start, end, ignoreTripIds = [], maxHours, ownContract) {
   const reasons = [], warns = [];
   if (d.status !== 'active') reasons.push({ ar: 'السائق غير نشط', en: 'Driver is inactive' });
   if (d.license_expiry < date) reasons.push({ ar: 'رخصة السائق منتهية', en: "Driver's license expired" });
   const hits = await calendarClashes(c, 'driver_commitments', 'driver_id', d.id, date, start, end, ignoreTripIds);
-  const exd = await require('./contracts').exclusiveClash(c, 'driver_id', d.id, date, start, end);
+  const exd = await require('./contracts').exclusiveClash(c, 'driver_id', d.id, date, start, end, ownContract);
   if (exd) reasons.push({ ar: `السائق مع مركبته على عقد حصري (${exd.number}) في الوقت ده`, en: `The driver works on exclusive contract ${exd.number} at that time` });
   // the same person may also drive for another company on Sabeel: only "busy" is known, not where
   const w = await windowOf(c, date, start, end);
@@ -156,19 +163,22 @@ function blocked(reasons, what) {
 
 /* create the trip for a booking on a vehicle — all hard rules checked here */
 async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
+  // a line's trips belong to its contract (if any): its exclusivity does not block them
+  // a line run takes the line's duration
+  if (b.line_id) { const ln = (await c.query('SELECT contract_id, duration_min FROM lines WHERE id = $1', [b.line_id])).rows[0]; if (ln) opts = Object.assign({ durationMin: ln.duration_min }, opts, opts.contractId ? {} : ln.contract_id ? { contractId: ln.contract_id } : {}); }
   const s = await core.settings(c, ctx);
   const v = await core.lock(c, 'vehicles', vehicleId, 'vehicle');
   const ri = await routeInfo(c, b.pickup, b.destination, b.route_type);
-  const start = toMin(b.time), dur = Math.round((b.route_km ? b.route_km / Math.max(1, ri.km) * ri.hours : ri.hours) * 60) + 15;
+  const start = toMin(b.time), dur = opts.durationMin || (Math.round((b.route_km ? b.route_km / Math.max(1, ri.km) * ri.hours : ri.hours) * 60) + 15);
   const end = start + dur;   // may run past midnight: the calendar works with real moments
-  const vr = await checkVehicle(c, v, b.date, start, end, [], b.pax, b.load_kg ? Number(b.load_kg) : null);
+  const vr = await checkVehicle(c, v, b.date, start, end, [], b.activity === 'cargo' ? null : b.pax, b.load_kg ? Number(b.load_kg) : null, opts.contractId);
   if (vr.length) throw blocked(vr, { ar: v.code, en: v.code });
   let d = null;
   const candidates = driverId ? [driverId] : [v.driver_id, ...(await c.query("SELECT id FROM drivers WHERE vehicle_id IS NULL AND status = 'active' ORDER BY code")).rows.map(r => r.id)].filter(Boolean);
   let lastReasons = [];
   for (const did of candidates) {
     const dd = await core.lock(c, 'drivers', did, 'driver');
-    const chk = await checkDriver(c, dd, b.date, start, end, [], s.maxDriveHours);
+    const chk = await checkDriver(c, dd, b.date, start, end, [], s.maxDriveHours, opts.contractId);
     if (!chk.reasons.length) { d = dd; break; }
     lastReasons = chk.reasons;
     if (driverId) throw blocked(chk.reasons, { ar: dd.name_ar, en: dd.name_en });
@@ -177,8 +187,8 @@ async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
   const vt = await core.mustExist(c, 'vehicle_types', (await c.query('SELECT id FROM vehicle_types WHERE code = $1', [v.type])).rows[0].id);
   const number = await core.nextNumber(c, ctx, 'TR', b.date);
   const t = await insert(c, 'trips', {
-    company_id: ctx.companyId, number, booking_id: b.id, program_id: b.program_id, client_id: b.client_id, vehicle_id: v.id, driver_id: d.id, date: b.date,
-    type: ri.type, from_place: b.pickup, to_place: b.destination, start_time: b.time, end_time: fromMin(end), duration_min: dur, planned_km: b.route_km || ri.km,
+    company_id: ctx.companyId, number, activity: b.activity, line_id: b.line_id || null, line_leg: opts.lineLeg || b.line_leg || null, contract_id: opts.contractId || null, booking_id: b.id, program_id: b.program_id, client_id: b.client_id, vehicle_id: v.id, driver_id: d.id, date: b.date,
+    type: b.trip_type || ri.type, from_place: b.pickup, to_place: b.destination, start_time: b.time, end_time: fromMin(end), duration_min: dur, planned_km: b.route_km || ri.km,
     planned_tolls: ri.gates * vt.toll_gate, revenue: opts.revenue != null ? opts.revenue : b.price, pax: b.pax, flight: b.flight, flight_status: b.flight ? 'ontime' : null, status: 'scheduled', created_by: ctx.user.name,
   });
   await c.query("UPDATE bookings SET unassigned = false, status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [b.id]);
@@ -188,7 +198,16 @@ async function assign(c, ctx, b, vehicleId, driverId, opts = {}) {
 }
 
 /* ===================== BOOKINGS ===================== */
-async function createBooking(ctx, i, c) {
+/* the activity of a new booking: given, or the company's only activity */
+async function bookingActivity(c, ctx, i) {
+  const list = (await activities.enabled(c, ctx)).filter(a => profiles.PROFILES[a]);
+  const a = V.oneOf(i, 'activity', profiles.CODES, { def: list.length === 1 ? list[0] : null });
+  if (!a) throw bad('activity', 'اختار النشاط', 'Choose the activity', 'activity');
+  if (!list.includes(a)) throw activities.disabledError(a);
+  return a;
+}
+/* internal: set only by other services (lines), never from a request: { lineId, lineLeg, contractId, revenue } */
+async function createBooking(ctx, i, c, internal = {}) {
   const clientId = V.uuid(i, 'clientId', { req: true });
   const client = await core.mustExist(c, 'clients', clientId, 'client');
   if (client.status !== 'active') throw bad('client', 'العميل غير نشط', 'The client is inactive', 'clientId');
@@ -196,33 +215,49 @@ async function createBooking(ctx, i, c) {
   if (date < core.addDays(core.today(), -1) && !V.bool(i, 'backdated')) throw bad('date', 'تاريخ الحجز في الماضي', 'The booking date is in the past', 'date');
   const time = V.time(i, 'time', { req: true });
   const vt = await vtypes.resolve(c, ctx, V.str(i, 'vehicleType', { req: true, max: 8 }));
-  // passengers are required for a type with seats; a cargo-only type (no seats) defaults to 1 (the driver's run)
-  let pax = V.int(i, 'pax', { min: 1, max: 120 });
-  if (pax == null) { if (vt.seats > 0) throw bad('required', 'عدد الركاب مطلوب', 'The number of passengers is required', 'pax'); pax = 1; }
-  const loadKg = V.num(i, 'loadKg', { gt: 0, max: 100000 });
-  if (loadKg != null && !(Number(vt.payload_kg) > 0)) throw bad('load', `نوع ${vt.code} مش للبضائع`, `Type ${vt.code} does not carry cargo`, 'loadKg');
+  // the booking's activity decides its fields (lib/profiles): passengers/headcount or a shipment
+  const act = await bookingActivity(c, ctx, i);
+  const prof = profiles.PROFILES[act];
+  const cargo = act === 'cargo';
+  let pax = 1, loadKg = null, ship = {};
+  if (cargo) {
+    loadKg = V.num(i, 'loadKg', { req: true, gt: 0, max: 100000 });
+    if (!(Number(vt.payload_kg) > 0)) throw bad('load', `نوع ${vt.code} مش للبضائع`, `Type ${vt.code} does not carry cargo`, 'vehicleType');
+    const flags = V.arr(i, 'cargoFlags', { max: 3 }).map(x => V.oneOf({ x }, 'x', Object.keys(profiles.CARGO_FLAGS), { req: true }));
+    ship = { goods: V.str(i, 'goods', { req: true, max: 160 }), pieces: V.int(i, 'pieces', { min: 1, max: 100000 }), volume_m3: V.num(i, 'volumeM3', { gt: 0, max: 1000 }), cargo_flags: [...new Set(flags)] };
+  } else {
+    pax = V.int(i, 'pax', { min: 1, max: 1000 });
+    if (pax == null) throw bad('required', `${prof.load.label.ar} مطلوب`, `${prof.load.label.en} is required`, 'pax');
+    if (i.loadKg != null && i.loadKg !== '') throw bad('load', 'الوزن للشحنات بس', 'Weight is for shipments only', 'loadKg');
+  }
+  const tripType = V.oneOf(i, 'tripType', Object.keys(prof.tripTypes), { def: null });
   const pickup = V.str(i, 'pickup', { req: true, max: 12 }), destination = V.str(i, 'destination', { req: true, max: 12 });
   await place(c, pickup, 'pickup'); await place(c, destination, 'destination');
   const vehicleType = vt.code;
   const price = V.num(i, 'price', { req: true, min: 0 });
   const routeType = V.oneOf(i, 'routeType', ['airport', 'city', 'intercity', 'hire']);
   const ri = await routeInfo(c, pickup, destination, routeType);
+  // tourism keeps reading its trip type from the route; the others pick from their own list
+  const type = tripType || (act === 'tourism' ? ri.type : prof.defaultTripType);
   const status = V.oneOf(i, 'status', ['tentative', 'confirmed'], { def: 'confirmed' });
   const credit = await creditCheck(c, ctx, client, price, V.bool(i, 'overrideCredit'));
-  const number = await core.nextNumber(c, ctx, 'BK', date);
-  const b = await insert(c, 'bookings', {
-    company_id: ctx.companyId, number, client_id: clientId, program_id: null, pax, date, time, pickup, destination, route_km: V.num(i, 'routeKm', { gt: 0, def: ri.km }), route_type: ri.type,
-    vehicle_type: vehicleType, load_kg: loadKg, price, paid: 0, status, flight: V.str(i, 'flight', { max: 12, re: /^[A-Za-z0-9 ]+$/ }), unassigned: true, notes: V.str(i, 'notes', { max: 1000, def: '' }),
-    created_by: ctx.user.name, external_ref: V.str(i, 'externalRef', { max: 80 }),
-  });
+  const number = await core.nextNumber(c, ctx, cargo ? 'SH' : 'BK', date);
+  // a shipment's delivery code: shown once to whoever created it (the shipper, or Sabeel Naql over the API); only its hash is kept
+  const code = cargo ? String(require('crypto').randomInt(0, 1000000)).padStart(6, '0') : null;
+  const b = await insert(c, 'bookings', Object.assign({
+    company_id: ctx.companyId, number, activity: act, trip_type: type, client_id: clientId, program_id: null, pax, date, time, pickup, destination, route_km: V.num(i, 'routeKm', { gt: 0, def: ri.km }), route_type: ri.type,
+    vehicle_type: vehicleType, load_kg: loadKg, price, paid: 0, status, flight: act === 'tourism' ? V.str(i, 'flight', { max: 12, re: /^[A-Za-z0-9 ]+$/ }) : null, unassigned: true, notes: V.str(i, 'notes', { max: 1000, def: '' }),
+    created_by: ctx.user.name, external_ref: V.str(i, 'externalRef', { max: 80 }), line_id: internal.lineId || null, line_leg: internal.lineLeg || null, otp_hash: code ? auth.sha256(code) : null,
+  }, ship));
   if (credit) await core.audit(c, ctx, 'approve', 'credit_limit', number, { field: 'exposure', before: credit.limit, after: credit.exposure });
   await core.audit(c, ctx, 'create', 'booking', number);
   await core.emit(c, ctx, 'booking.created', { id: b.id, number, clientId, date, time, pickup, destination, pax, vehicleType, price, status });
   if (status === 'confirmed') await core.emit(c, ctx, 'booking.confirmed', { id: b.id, number });
   let trip = null;
   const vehicleId = V.uuid(i, 'vehicleId');
-  if (vehicleId) trip = await assign(c, ctx, b, vehicleId, V.uuid(i, 'driverId'));
-  return { id: b.id, number, trip: trip ? { id: trip.id, number: trip.number } : null };
+  if (vehicleId) trip = await assign(c, ctx, b, vehicleId, V.uuid(i, 'driverId'), { lineLeg: internal.lineLeg, contractId: internal.contractId, revenue: internal.revenue });
+  if (code) await core.emit(c, ctx, 'shipment.code', { id: b.id, number, clientId, deliveryCode: code });
+  return { id: b.id, number, activity: act, deliveryCode: code || undefined, trip: trip ? { id: trip.id, number: trip.number } : null };
 }
 define('booking.create', G.ops, createBooking);
 
@@ -296,7 +331,7 @@ define('program.create', G.ops, async (ctx, i, c) => {
     dayRows.push(Object.assign(row, { ri })); totalKm += km;
   }
   const bkNumber = await core.nextNumber(c, ctx, 'BK', start);
-  const bk = await insert(c, 'bookings', { company_id: ctx.companyId, number: bkNumber, client_id: clientId, program_id: prog.id, pax, date: start, time: dayRows[0].time, pickup: dayRows[0].from_code, destination: dayRows[dayRows.length - 1].to_code, route_km: totalKm, route_type: 'intercity', vehicle_type: dayRows[0].vehicle_type, price, status, unassigned: !v, created_by: ctx.user.name });
+  const bk = await insert(c, 'bookings', { company_id: ctx.companyId, number: bkNumber, activity: 'tourism', trip_type: 'intercity', client_id: clientId, program_id: prog.id, pax, date: start, time: dayRows[0].time, pickup: dayRows[0].from_code, destination: dayRows[dayRows.length - 1].to_code, route_km: totalKm, route_type: 'intercity', vehicle_type: dayRows[0].vehicle_type, price, status, unassigned: !v, created_by: ctx.user.name });
   await c.query('UPDATE programs SET booking_id = $1 WHERE id = $2', [bk.id, prog.id]);
   if (v) await scheduleProgram(c, ctx, prog.id);
   if (credit) await core.audit(c, ctx, 'approve', 'credit_limit', number, { field: 'exposure', before: credit.limit, after: credit.exposure });
@@ -328,7 +363,7 @@ async function scheduleProgram(c, ctx, programId) {
     if (dr.reasons.length) throw blocked(dr.reasons, { ar: `${d.name_ar} يوم ${day.day}`, en: `${d.name_en} day ${day.day}` });
     const revenue = round2(prog.price * (0.5 / days.length + 0.5 * day.km / totalKm));
     const number = await core.nextNumber(c, ctx, 'TR', day.date);
-    await insert(c, 'trips', { company_id: ctx.companyId, number, booking_id: bk.id, program_id: programId, client_id: prog.client_id, vehicle_id: v.id, driver_id: d.id, date: day.date, type: day.km > 150 ? 'intercity' : ri.type, from_place: day.from_code, to_place: day.to_code, start_time: day.time, end_time: fromMin(end), duration_min: end - start, planned_km: day.km, planned_tolls: ri.gates * vt.toll_gate, revenue, pax: prog.pax, status: 'scheduled', created_by: ctx.user.name });
+    await insert(c, 'trips', { company_id: ctx.companyId, number, activity: 'tourism', booking_id: bk.id, program_id: programId, client_id: prog.client_id, vehicle_id: v.id, driver_id: d.id, date: day.date, type: day.km > 150 ? 'intercity' : ri.type, from_place: day.from_code, to_place: day.to_code, start_time: day.time, end_time: fromMin(end), duration_min: end - start, planned_km: day.km, planned_tolls: ri.gates * vt.toll_gate, revenue, pax: prog.pax, status: 'scheduled', created_by: ctx.user.name });
   }
   await c.query("UPDATE bookings SET unassigned = false, status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [bk.id]);
   await c.query("UPDATE programs SET status = CASE WHEN status = 'tentative' THEN 'confirmed' ELSE status END WHERE id = $1", [programId]);
@@ -379,6 +414,41 @@ define('trip.start', G.ops, async (ctx, i, c) => {
   await core.emit(c, ctx, 'trip.started', { id: t.id, number: t.number, startKm: odo });
 });
 
+/* a shipment is delivered only with its delivery code (the consignee has it from the shipper).
+   Five wrong codes lock it until a new code is issued; a company admin can close it without the
+   code, giving the reason (recorded). */
+async function deliveryCheck(c, ctx, t, i) {
+  if (!t.booking_id) return null;
+  const bk = (await c.query('SELECT id, number, activity, otp_hash, otp_attempts, delivered_at FROM bookings WHERE id = $1', [t.booking_id])).rows[0];
+  if (!bk || bk.activity !== 'cargo' || !bk.otp_hash || bk.delivered_at) return null;
+  const reason = V.str(i, 'overrideReason', { max: 300 });
+  if (reason) {
+    if (!['company_admin', 'super_admin'].includes(ctx.user.role)) throw forbidden();
+    await core.audit(c, ctx, 'approve', 'delivery_without_code', bk.number, { field: 'reason', before: '', after: reason });
+    return { id: bk.id, number: bk.number, by: `${ctx.user.name} (${reason})` };
+  }
+  if (bk.otp_attempts >= 5) throw conflict('code_locked', 'كود التسليم اتقفل بعد 5 محاولات غلط. اطلب كود جديد من مدير الحركة.', 'The delivery code is locked after 5 wrong tries. Ask dispatch for a new code.');
+  const code = V.str(i, 'deliveryCode', { max: 12 });
+  if (!code) throw bad('deliveryCode', 'اكتب كود التسليم اللي مع المستلم', 'Enter the delivery code the consignee has', 'deliveryCode');
+  if (auth.sha256(code.replace(/\s/g, '')) !== bk.otp_hash) {
+    // the wrong try is counted even though this action is refused
+    await db.tx(ctx.companyId, cc => cc.query('UPDATE bookings SET otp_attempts = otp_attempts + 1 WHERE id = $1', [bk.id]));
+    throw bad('deliveryCode', `كود التسليم غلط (فاضل ${Math.max(0, 4 - bk.otp_attempts)} محاولات)`, `Wrong delivery code (${Math.max(0, 4 - bk.otp_attempts)} tries left)`, 'deliveryCode');
+  }
+  return { id: bk.id, number: bk.number, by: ctx.user.name };
+}
+/* a new delivery code for a shipment (lost code, or locked after wrong tries) */
+define('shipment.newCode', G.ops, async (ctx, i, c) => {
+  const b = await core.lock(c, 'bookings', V.uuid(i, 'id', { req: true }), 'booking');
+  if (b.activity !== 'cargo') throw bad('activity', 'الكود للشحنات بس', 'Delivery codes are for shipments only');
+  if (b.delivered_at) throw conflict('delivered', 'الشحنة اتسلمت بالفعل', 'The shipment is already delivered');
+  const code = String(require('crypto').randomInt(0, 1000000)).padStart(6, '0');
+  await c.query('UPDATE bookings SET otp_hash = $1, otp_attempts = 0 WHERE id = $2', [auth.sha256(code), b.id]);
+  await core.audit(c, ctx, 'update', 'shipment_code', b.number);
+  await core.emit(c, ctx, 'shipment.code', { id: b.id, number: b.number, clientId: b.client_id, deliveryCode: code });
+  return { number: b.number, deliveryCode: code };
+});
+
 define('trip.complete', G.ops, async (ctx, i, c) => {
   const t = await core.lock(c, 'trips', V.uuid(i, 'id', { req: true }), 'trip');
   if (!['running', 'scheduled'].includes(t.status)) throw conflict('state', 'الرحلة منتهية أو ملغية', 'The trip is already finished or cancelled');
@@ -386,6 +456,7 @@ define('trip.complete', G.ops, async (ctx, i, c) => {
   const startKm = t.start_km != null ? t.start_km : V.int(i, 'startKm', { def: v.odometer, min: 0 });
   const endKm = V.int(i, 'endKm', { req: true, min: 0 });
   if (endKm < startKm) throw bad('endKm', `عداد النهاية أقل من عداد البداية (${startKm})`, `The end odometer is lower than the start (${startKm})`, 'endKm');
+  const delivery = await deliveryCheck(c, ctx, t, i);
   if (endKm - startKm > 2500) throw bad('endKm', 'المسافة أكبر من 2500 كم في رحلة واحدة — راجع العداد', 'More than 2,500 km on one trip — check the odometer', 'endKm');
   const exp = i.expenses || {};
   const tolls = V.num(exp, 'tolls', { min: 0, def: 0 }), parking = V.num(exp, 'parking', { min: 0, def: 0 }), lodging = V.num(exp, 'lodging', { min: 0, def: 0 }), other = V.num(exp, 'other', { min: 0, def: 0 });
@@ -396,6 +467,10 @@ define('trip.complete', G.ops, async (ctx, i, c) => {
     on_time = $8, delay_min = $9, completed_at = now(), started_at = coalesce(started_at, now()) WHERE id = $10`,
   [startKm, endKm, endKm - startKm, tolls, parking, lodging, other, delay <= 10, delay, t.id]);
   if (endKm > v.odometer) await c.query('UPDATE vehicles SET odometer = $1 WHERE id = $2', [endKm, v.id]);
+  if (delivery) {
+    await c.query('UPDATE bookings SET delivered_at = now(), delivered_by = $2 WHERE id = $1', [delivery.id, delivery.by]);
+    await core.emit(c, ctx, 'shipment.delivered', { id: delivery.id, number: delivery.number, tripId: t.id, at: new Date().toISOString() });
+  }
   const base = { date, vehicleId: v.id, tripId: t.id, programId: t.program_id, driverId: t.driver_id, sourceType: 'trip', sourceId: t.id, sourceRef: t.number };
   if (tolls) {
     if (tollsBy === 'tag') { const tag = (await c.query("SELECT id FROM toll_tags WHERE vehicle_id = $1 AND status = 'active' LIMIT 1 FOR UPDATE", [v.id])).rows[0]; if (tag) await c.query('UPDATE toll_tags SET balance = balance - $1 WHERE id = $2', [tolls, tag.id]); }
@@ -619,7 +694,7 @@ define('me.tripStart', ['driver'], async (ctx, i, c) => {
 define('me.tripComplete', ['driver'], async (ctx, i, c) => {
   const t = await ownTrip(c, ctx, i.id);
   const exp = i.expenses || {};
-  return actions.get('trip.complete').handler(ctx, { id: t.id, endKm: i.endKm, expenses: { tolls: exp.tolls, parking: exp.parking }, note: i.note }, c);
+  return actions.get('trip.complete').handler(ctx, { id: t.id, endKm: i.endKm, expenses: { tolls: exp.tolls, parking: exp.parking }, note: i.note, deliveryCode: i.deliveryCode }, c);
 });
 
 module.exports = { createBooking, createClient, assign, routeInfo, checkVehicle, checkDriver };

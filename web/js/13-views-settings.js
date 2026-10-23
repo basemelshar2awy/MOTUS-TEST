@@ -94,7 +94,7 @@
   });
   U.act('vt-edit', el => { const t = M.vehicleClasses[el.dataset.code]; U.formModal(tt('تعديل نوع المركبة', 'Edit vehicle type') + ' ' + t.code, [
     { f: 'name', label: tt('الاسم', 'Name'), value: M.L(t.name), req: true }, { f: 'seats', label: tt('المقاعد', 'Seats'), type: 'number', value: t.seats, attrs: 'min="0"' },
-    { f: 'payloadKg', label: tt('الحمولة (كجم)', 'Payload (kg)'), type: 'number', value: t.payloadKg || 0, attrs: 'min="0"' }, { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', value: t.volumeM3 || 0, attrs: 'min="0" step="0.1"' },
+    M.has('cargo') || t.payloadKg ? { f: 'payloadKg', label: tt('الحمولة (كجم)', 'Payload (kg)'), type: 'number', value: t.payloadKg || 0, attrs: 'min="0"' } : null, M.has('cargo') || t.volumeM3 ? { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', value: t.volumeM3 || 0, attrs: 'min="0" step="0.1"' } : null,
     { f: 'fuel', label: tt('الوقود', 'Fuel'), type: 'select', value: t.fuel, options: U.FUELS.map(k => [k, U.fuelName(k)]) }, { f: 'oilKm', label: tt('فاصل الزيت (كم)', 'Oil interval (km)'), type: 'number', value: t.oilKm },
     { f: 'lifeYears', label: tt('العمر (سنين)', 'Life (years)'), type: 'number', value: t.lifeYears, attrs: 'step="0.5"' }, { f: 'lifeKm', label: tt('العمر (كم)', 'Life (km)'), type: 'number', value: t.lifeKm }, { f: 'salvagePct', label: tt('نسبة الخردة (0–0.9)', 'Salvage share (0–0.9)'), type: 'number', value: t.salvagePct, attrs: 'step="0.01"' },
     { f: 'tankL', label: tt('سعة التانك (لتر)', 'Tank (L)'), type: 'number', value: t.tank }, { f: 'kmpl', label: tt('معدل الاستهلاك كم/لتر', 'Benchmark km/L'), type: 'number', value: t.kmpl, attrs: 'step="0.1"' }, { f: 'rateKm', label: tt('سعر الكيلو للتسعير', 'Pricing rate per km'), type: 'number', value: t.rateKm },
@@ -109,8 +109,8 @@
       { f: 'category', label: tt('الفئة', 'Category'), type: 'select', options: cats.map(k => [k.code, M.L(k.name)]), req: true },
       { f: 'name', label: tt('الاسم', 'Name'), req: true },
       { f: 'seats', label: tt('المقاعد', 'Seats'), type: 'number', attrs: 'min="0"', help: tt('فاضي = من الفئة', 'Empty = from the category') },
-      { f: 'payloadKg', label: tt('الحمولة (كجم)', 'Payload (kg)'), type: 'number', attrs: 'min="0"', help: tt('فاضي = من الفئة', 'Empty = from the category') },
-      { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', attrs: 'min="0" step="0.1"' },
+      M.has('cargo') ? { f: 'payloadKg', label: tt('الحمولة (كجم)', 'Payload (kg)'), type: 'number', attrs: 'min="0"', help: tt('فاضي = من الفئة', 'Empty = from the category') } : null,
+      M.has('cargo') ? { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', attrs: 'min="0" step="0.1"' } : null,
     ], 'vehicleType.create', { intro: `<p class="muted small">${tt('الفئات المتاحة حسب أنشطة شركتك. باقي القيم (الزيت، العمر، الاستهلاك، التسعير) بتبدأ من القيم الافتراضية للفئة وتقدر تعدّلها بعد الحفظ.', 'Categories follow your company activities. Other values (oil, life, consumption, pricing) start from the category defaults and can be edited after saving.')}</p>`, map: d => { d.code = String(d.code || '').toUpperCase(); ['seats', 'payloadKg', 'volumeM3'].forEach(k => { if (d[k] === '' || d[k] == null) delete d[k]; }); return d; }, ok: r => tt('تم إضافة النوع ', 'Type added ') + r.code });
   });
 

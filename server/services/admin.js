@@ -160,7 +160,7 @@ define('user.remove', G.admin, async (ctx, i, c) => {
 });
 
 /* ---------- Open API keys: shown once, stored as SHA-256 ---------- */
-const SCOPES = ['vehicles', 'drivers', 'clients', 'bookings', 'trips', 'programs', 'invoices', 'payments', 'expenses', 'journal', 'items', 'stock', 'fuel', 'tracking', 'reports', 'suppliers', 'workorders', 'contracts'];
+const SCOPES = ['vehicles', 'drivers', 'clients', 'bookings', 'trips', 'programs', 'invoices', 'payments', 'expenses', 'journal', 'items', 'stock', 'fuel', 'tracking', 'reports', 'suppliers', 'workorders', 'contracts', 'lines'];
 define('apiKey.create', G.admin, async (ctx, i, c) => {
   const name = V.text2(i, 'name', { req: true, max: 120 });
   const scopes = [...new Set(V.arr(i, 'scopes', { req: true, min: 1, max: 40 }).map(String))];
@@ -180,7 +180,7 @@ define('apiKey.revoke', G.admin, async (ctx, i, c) => {
 });
 
 /* ---------- outbound webhooks ---------- */
-const EVENTS = ['booking.created', 'booking.confirmed', 'booking.cancelled', 'trip.assigned', 'trip.started', 'trip.completed', 'trip.cancelled', 'invoice.issued', 'invoice.cancelled', 'credit_note.issued', 'payment.received', 'journal.posted', 'vehicle.created', 'vehicle.updated', 'client.created', 'work_order.closed', 'stock.received', 'tracking.alert', 'ping'];
+const EVENTS = ['booking.created', 'booking.confirmed', 'booking.cancelled', 'trip.assigned', 'trip.started', 'trip.completed', 'trip.cancelled', 'invoice.issued', 'invoice.cancelled', 'credit_note.issued', 'payment.received', 'journal.posted', 'vehicle.created', 'vehicle.updated', 'client.created', 'work_order.closed', 'stock.received', 'tracking.alert', 'ping', 'shipment.code', 'shipment.delivered'];
 define('webhook.create', G.admin, async (ctx, i, c) => {
   const url = V.str(i, 'url', { req: true, max: 400, re: /^https?:\/\/[^\s]+$/ });
   const events = [...new Set(V.arr(i, 'events', { req: true, min: 1, max: 30 }).map(String))];

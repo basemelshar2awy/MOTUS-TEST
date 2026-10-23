@@ -9,6 +9,7 @@ const db = require('./db');
 const core = require('./core');
 const activities = require('./activities');
 const countries = require('./countries');
+const profiles = require('./profiles');
 
 const HISTORY_DAYS = parseInt(process.env.MOTUS_HISTORY_DAYS || '400', 10);
 const L = (r, f) => ({ ar: r[f + '_ar'] || r[f + '_en'] || '', en: r[f + '_en'] || r[f + '_ar'] || '' });
@@ -64,7 +65,7 @@ async function load(companyId) {
     }));
     const trips = await q('SELECT * FROM trips WHERE date >= $1 OR status IN (\'scheduled\',\'running\') ORDER BY date, start_time', [since]);
     D.trips = trips.map(r => Object.assign(base(r), {
-      number: r.number, bookingId: r.booking_id, programId: r.program_id, clientId: r.client_id, vehicleId: r.vehicle_id, driverId: r.driver_id, date: r.date, type: r.type, source: r.source, contractId: r.contract_id,
+      number: r.number, bookingId: r.booking_id, programId: r.program_id, clientId: r.client_id, vehicleId: r.vehicle_id, driverId: r.driver_id, date: r.date, type: r.type, activity: r.activity, lineId: r.line_id, lineLeg: r.line_leg, source: r.source, contractId: r.contract_id,
       from: r.from_place, to: r.to_place, startTime: r.start_time, endTime: r.end_time, startsAt: core.fmtTs(r.starts_at), endsAt: core.fmtTs(r.ends_at), durationMin: r.duration_min, startKm: r.start_km, endKm: r.end_km, km: r.km, plannedKm: N(r.planned_km), gpsKm: r.gps_km,
       revenue: N(r.revenue), expenses: { tolls: N(r.exp_tolls), parking: N(r.exp_parking), lodging: N(r.exp_lodging), other: N(r.exp_other) }, plannedTolls: N(r.planned_tolls),
       status: r.status, invoiced: !!r.invoice_id, invoiceId: r.invoice_id, pax: r.pax, flight: r.flight, flightStatus: r.flight_status, onTime: r.on_time, delayMin: r.delay_min,
@@ -73,7 +74,7 @@ async function load(companyId) {
     const tripIdsByBooking = {};
     D.trips.forEach(t => { if (t.bookingId) (tripIdsByBooking[t.bookingId] = tripIdsByBooking[t.bookingId] || []).push(t.id); });
     D.bookings = (await q('SELECT * FROM bookings WHERE date >= $1 OR status IN (\'tentative\',\'confirmed\') ORDER BY date, time', [since])).map(r => Object.assign(base(r), {
-      number: r.number, clientId: r.client_id, programId: r.program_id, pax: r.pax, date: r.date, time: r.time, pickup: r.pickup, destination: r.destination, routeKm: N(r.route_km), routeType: r.route_type,
+      number: r.number, activity: r.activity, tripType: r.trip_type, lineId: r.line_id, goods: r.goods, pieces: r.pieces, volumeM3: N(r.volume_m3), cargoFlags: r.cargo_flags || [], hasCode: !!r.otp_hash, codeLocked: (r.otp_attempts || 0) >= 5, deliveredAt: r.delivered_at ? core.fmtTs(r.delivered_at) : null, deliveredBy: r.delivered_by, clientId: r.client_id, programId: r.program_id, pax: r.pax, date: r.date, time: r.time, pickup: r.pickup, destination: r.destination, routeKm: N(r.route_km), routeType: r.route_type,
       vehicleType: r.vehicle_type, loadKg: N(r.load_kg), price: N(r.price), paid: N(r.paid), status: r.status, cancelReason: r.cancel_reason_ar ? [r.cancel_reason_ar, r.cancel_reason_en || r.cancel_reason_ar] : null,
       flight: r.flight, unassigned: r.unassigned && r.status !== 'cancelled', notes: r.notes, tripIds: tripIdsByBooking[r.id] || [],
     }));
@@ -172,7 +173,11 @@ async function load(companyId) {
     D.contracts = (await q('SELECT * FROM contracts ORDER BY start_date DESC, number DESC')).map(r => Object.assign(base(r), {
       number: r.number, clientId: r.client_id, name: L(r, 'name'), channel: r.channel, externalSystem: r.external_system, pricing: r.pricing, rate: N(r.rate), cycle: r.cycle,
       withDriver: r.with_driver, exclusive: r.exclusive, workDays: (r.work_days || []).map(Number), workStart: r.work_start, workEnd: r.work_end, startDate: r.start_date, endDate: r.end_date,
-      kmAllowance: r.km_allowance, kmBasis: r.km_basis, extraKmRate: N(r.extra_km_rate), billedTo: r.billed_to, status: r.status, terms: L(r, 'terms') }));
+      activity: r.activity, kmAllowance: r.km_allowance, kmBasis: r.km_basis, extraKmRate: N(r.extra_km_rate), billedTo: r.billed_to, status: r.status, terms: L(r, 'terms') }));
+    // lines: recurring runs (schools, staff shifts, intercity departures) — counts only
+    D.lines = (await q('SELECT * FROM lines ORDER BY number')).map(r => Object.assign(base(r), { number: r.number, activity: r.activity, name: L(r, 'name'), clientId: r.client_id, contractId: r.contract_id, from: r.from_place, to: r.to_place, stops: r.stops || [],
+      goTime: r.go_time, returnTime: r.return_time, durationMin: r.duration_min, days: (r.days || []).map(Number), startDate: r.start_date, endDate: r.end_date, vehicleType: r.vehicle_type, vehicleId: r.vehicle_id, driverId: r.driver_id,
+      headcount: r.headcount, pricePerRun: N(r.price_per_run), generatedTo: r.generated_to, status: r.status, notes: r.notes }));
     D.contractVehicles = (await q('SELECT * FROM contract_vehicles ORDER BY from_date')).map(r => ({ id: r.id, contractId: r.contract_id, vehicleId: r.vehicle_id, driverId: r.driver_id, from: r.from_date, to: r.to_date }));
     D.calendar = {
       vehicles: (await calQ('vehicle_commitments', 'vehicle_id')).map(r => Object.assign({ vehicleId: r.owner_id }, cal(r))),
@@ -181,7 +186,7 @@ async function load(companyId) {
 
     D.settings = settings;
     return {
-      activities: acts,
+      activities: acts, profiles: profiles.publicProfiles(acts),
       version: Number(st.data_version), loadedAt: Date.now(), today,
       company: { id: co.id, code: co.code, name: L(co, 'name'), taxNo: co.tax_no, country: co.country, timezone: co.timezone, countryPack: countries.publicPack(co.country), countryLocked: (await q('SELECT 1 FROM invoices LIMIT 1')).length > 0, currency: co.currency, fyStart: co.fy_start, status: co.status, createdAt: core.fmtTs(co.created_at).slice(0, 10) },
       data: D,
@@ -200,11 +205,15 @@ function forDriver(snap, driverId) {
   const vids = new Set(trips.map(t => t.vehicleId).concat(me && me.vehicleId ? [me.vehicleId] : []));
   for (const [k, v] of Object.entries(src)) D[k] = Array.isArray(v) ? (DRIVER_KEEP.includes(k) ? v : []) : v;
   D.trips = trips.map(t => Object.assign({}, t, { revenue: 0, clientId: null }));
+  // what the driver needs about the trip's shipment or line (no prices, no client)
+  const bids = new Set(trips.map(t => t.bookingId)), lids = new Set(trips.map(t => t.lineId).filter(Boolean));
+  D.bookings = src.bookings.filter(b => bids.has(b.id)).map(b => ({ id: b.id, number: b.number, activity: b.activity, tripType: b.tripType, goods: b.goods, loadKg: b.loadKg, pieces: b.pieces, cargoFlags: b.cargoFlags, hasCode: b.hasCode, deliveredAt: b.deliveredAt }));
+  D.lines = (src.lines || []).filter(l => lids.has(l.id)).map(l => ({ id: l.id, number: l.number, activity: l.activity, name: l.name, stops: l.stops, headcount: l.headcount, from: l.from, to: l.to }));
   D.drivers = me ? [me] : [];
   D.vehicles = src.vehicles.filter(v => vids.has(v.id)).map(v => ({ id: v.id, code: v.code, plate: v.plate, type: v.type, make: v.make, model: v.model, seats: v.seats, status: v.status, odometer: v.odometer }));
   D.calendar = { vehicles: [], drivers: src.calendar.drivers.filter(x => x.driverId === driverId) };
   D.stock = {}; D.settings = { vatRate: src.settings.vatRate, currency: src.settings.currency };
-  return { version: snap.version, today: snap.today, company: snap.company, activities: snap.activities, activityCatalog: activities.CATALOG, data: D, driver: true };
+  return { version: snap.version, today: snap.today, company: snap.company, activities: snap.activities, profiles: snap.profiles, activityCatalog: activities.CATALOG, data: D, driver: true };
 }
 function forRole(snap, role, userId, driverId) {
   if (role === 'driver') return forDriver(snap, driverId);
@@ -216,7 +225,7 @@ function forRole(snap, role, userId, driverId) {
     D.passengers = D.passengers.map(p => Object.assign({}, p, { passportNo: p.passportNo ? p.passportNo.slice(0, 2) + '•••••' + p.passportNo.slice(-2) : '' }));
   }
   D.aiConversations = D.aiConversations.filter(cv => cv.userId === userId || ADMIN.includes(role));
-  return { version: snap.version, today: snap.today, company: snap.company, activities: snap.activities, activityCatalog: activities.CATALOG, data: D };
+  return { version: snap.version, today: snap.today, company: snap.company, activities: snap.activities, profiles: snap.profiles, activityCatalog: activities.CATALOG, data: D };
 }
 
 /* cached per company; reused only while the data version is unchanged and the day has not rolled */

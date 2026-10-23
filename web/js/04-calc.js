@@ -147,7 +147,9 @@
     const per = C.vehiclePL(cid, v.id, C.lifeFrom(), C.lifeTo());
     const fuelKm = per.km ? per.fuel / per.km : 0;
     const maintKm = per.km ? (per.maintenance + per.oil) / per.km : 0;
-    const fixedDay = (per.driver + per.licIns + per.depreciation) / Math.max(1, per.opDays);
+    // the vehicle's fixed cost of one calendar day (salary, license & insurance, depreciation); idle days stay idle cost
+    // instead of landing on the few trips of a vehicle that is new on the system
+    const fixedDay = (per.driver + per.licIns + per.depreciation) / Math.max(1, per.days);
     const km = t.km || t.plannedKm;
     const fuel = km * fuelKm, maint = km * maintKm, direct = t.expenses.tolls + t.expenses.parking + t.expenses.lodging;
     const sameDay = db.trips.filter(x => x.vehicleId === t.vehicleId && x.date === t.date && x.status === 'completed').length || 1;
@@ -265,7 +267,8 @@
     const per = vs.map(v => C.vehiclePL(cid, v.id, C.lifeFrom(), C.lifeTo()));
     const tk = M.sum(per, p => p.km) || 1;
     const fuelKm = M.sum(per, p => p.fuel) / tk, maintKm = M.sum(per, p => p.maintenance + p.oil) / tk;
-    const fixedDay = M.sum(per, p => p.driver + p.licIns + p.depreciation) / Math.max(1, M.sum(per, p => p.opDays));
+    // pricing recovers the fixed cost over the working days (at least 60% of the days, so a short history does not inflate it)
+    const fixedDay = M.sum(per, p => p.driver + p.licIns + p.depreciation) / Math.max(1, M.sum(per, p => Math.max(p.opDays, Math.round(p.days * 0.6))));
     const totalKm = km + emptyKm;
     const fuel = totalKm * fuelKm, maint = totalKm * maintKm, fixed = fixedDay * Math.max(1, days || Math.ceil(hours / 10));
     const breakEven = fuel + maint + fixed + tolls;

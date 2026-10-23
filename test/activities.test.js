@@ -50,11 +50,11 @@ test('a cargo company cannot use tourism tools: programs are refused on the serv
   denied(r, 'program.create');
   denied(await cargo.do('program.cancel', { id: '00000000-0000-0000-0000-000000000000' }), 'program.cancel');
   denied(await cargo.do('place.create', { code: 'AP1', name: 'Airport', kind: 'airport', lat: 30, lng: 31 }), 'airport place');
-  await ok(cargo.do('place.create', { code: 'WH1', name: 'Depot', kind: 'site', lat: 30, lng: 31 }), 'shared place kind is fine');
+  await ok(cargo.do('place.create', { code: 'WH1', name: 'Depot', kind: 'warehouse', lat: 30, lng: 31 }), 'a cargo place kind is fine');
 });
 
 test('tourism-only fields of shared actions are dropped for a company without tourism', async () => {
-  const b = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(3), time: '09:00', pax: 2, pickup: 'CAI', destination: 'ALX', vehicleType: 'VN', price: 500, flight: 'MS 777' }));
+  const b = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(3), time: '09:00', pax: 2, pickup: 'CAI', destination: 'ALX', vehicleType: 'VN', price: 500, loadKg: 300, goods: 'Boxes', flight: 'MS 777' }));
   const row = (await env.sql('SELECT flight FROM bookings WHERE id = $1', [b.id])).rows[0];
   assert.equal(row.flight, null, 'flight not stored');
   await ok(cargo.do('booking.assign', { bookingId: b.id, vehicleId: ids.v }));
