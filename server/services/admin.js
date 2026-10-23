@@ -160,7 +160,7 @@ define('user.remove', G.admin, async (ctx, i, c) => {
 });
 
 /* ---------- Open API keys: shown once, stored as SHA-256 ---------- */
-const SCOPES = ['vehicles', 'drivers', 'clients', 'bookings', 'trips', 'programs', 'invoices', 'payments', 'expenses', 'journal', 'items', 'stock', 'fuel', 'tracking', 'reports', 'suppliers', 'workorders'];
+const SCOPES = ['vehicles', 'drivers', 'clients', 'bookings', 'trips', 'programs', 'invoices', 'payments', 'expenses', 'journal', 'items', 'stock', 'fuel', 'tracking', 'reports', 'suppliers', 'workorders', 'contracts'];
 define('apiKey.create', G.admin, async (ctx, i, c) => {
   const name = V.text2(i, 'name', { req: true, max: 120 });
   const scopes = [...new Set(V.arr(i, 'scopes', { req: true, min: 1, max: 40 }).map(String))];

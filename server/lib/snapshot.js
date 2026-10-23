@@ -64,7 +64,7 @@ async function load(companyId) {
     }));
     const trips = await q('SELECT * FROM trips WHERE date >= $1 OR status IN (\'scheduled\',\'running\') ORDER BY date, start_time', [since]);
     D.trips = trips.map(r => Object.assign(base(r), {
-      number: r.number, bookingId: r.booking_id, programId: r.program_id, clientId: r.client_id, vehicleId: r.vehicle_id, driverId: r.driver_id, date: r.date, type: r.type,
+      number: r.number, bookingId: r.booking_id, programId: r.program_id, clientId: r.client_id, vehicleId: r.vehicle_id, driverId: r.driver_id, date: r.date, type: r.type, source: r.source, contractId: r.contract_id,
       from: r.from_place, to: r.to_place, startTime: r.start_time, endTime: r.end_time, startsAt: core.fmtTs(r.starts_at), endsAt: core.fmtTs(r.ends_at), durationMin: r.duration_min, startKm: r.start_km, endKm: r.end_km, km: r.km, plannedKm: N(r.planned_km), gpsKm: r.gps_km,
       revenue: N(r.revenue), expenses: { tolls: N(r.exp_tolls), parking: N(r.exp_parking), lodging: N(r.exp_lodging), other: N(r.exp_other) }, plannedTolls: N(r.planned_tolls),
       status: r.status, invoiced: !!r.invoice_id, invoiceId: r.invoice_id, pax: r.pax, flight: r.flight, flightStatus: r.flight_status, onTime: r.on_time, delayMin: r.delay_min,
@@ -95,7 +95,7 @@ async function load(companyId) {
     D.invoices = (await q("SELECT * FROM invoices WHERE issue_date >= $1 OR status IN ('issued','partial') ORDER BY issue_date, number", [since])).map(r => Object.assign(base(r), {
       number: r.number, clientId: r.client_id, issueDate: r.issue_date, dueDate: r.due_date, currency: r.currency, rate: N(r.rate), subtotal: N(r.subtotal), discount: N(r.discount), tax: N(r.tax), total: N(r.total), paid: N(r.paid), status: r.status, source: r.source,
       eInvoice: { uuid: r.einv_uuid, status: r.einv_status, provider: r.einv_provider },
-      lines: lines.filter(l => l.invoice_id === r.id).map(l => ({ desc: L(l, 'description'), tripId: l.trip_id, programId: l.program_id, bookingId: l.booking_id, qty: N(l.qty), unit: N(l.unit), discount: N(l.discount), taxRate: N(l.tax_rate), total: N(l.total) })),
+      lines: lines.filter(l => l.invoice_id === r.id).map(l => ({ desc: L(l, 'description'), tripId: l.trip_id, programId: l.program_id, bookingId: l.booking_id, contractId: l.contract_id, periodFrom: l.period_from, periodTo: l.period_to, qty: N(l.qty), unit: N(l.unit), discount: N(l.discount), taxRate: N(l.tax_rate), total: N(l.total) })),
     }));
     D.creditNotes = (await q('SELECT * FROM credit_notes ORDER BY date')).map(r => Object.assign(base(r), { number: r.number, invoiceId: r.invoice_id, clientId: r.client_id, date: r.date, reason: L(r, 'reason'), subtotal: N(r.subtotal), tax: N(r.tax), total: N(r.total) }));
     const allocs = await q('SELECT * FROM payment_allocations');
@@ -168,6 +168,12 @@ async function load(companyId) {
     const calQ = (table, col) => q(`SELECT ${col} owner_id, kind, source_type, source_id, note, lower(during) s, upper(during) e FROM ${table}
       WHERE during && tstzrange(local_moment($1::uuid, $2::date, '00:00'), local_moment($1::uuid, $3::date, '00:00'), '[)') ORDER BY lower(during)`, [companyId, calFrom, calTo]);
     const cal = r => ({ kind: r.kind, sourceType: r.source_type, sourceId: r.source_id, note: r.note, from: core.fmtTs(r.s), to: core.fmtTs(r.e) });
+    // operating contracts and their vehicles
+    D.contracts = (await q('SELECT * FROM contracts ORDER BY start_date DESC, number DESC')).map(r => Object.assign(base(r), {
+      number: r.number, clientId: r.client_id, name: L(r, 'name'), channel: r.channel, externalSystem: r.external_system, pricing: r.pricing, rate: N(r.rate), cycle: r.cycle,
+      withDriver: r.with_driver, exclusive: r.exclusive, workDays: (r.work_days || []).map(Number), workStart: r.work_start, workEnd: r.work_end, startDate: r.start_date, endDate: r.end_date,
+      kmAllowance: r.km_allowance, kmBasis: r.km_basis, extraKmRate: N(r.extra_km_rate), billedTo: r.billed_to, status: r.status, terms: L(r, 'terms') }));
+    D.contractVehicles = (await q('SELECT * FROM contract_vehicles ORDER BY from_date')).map(r => ({ id: r.id, contractId: r.contract_id, vehicleId: r.vehicle_id, driverId: r.driver_id, from: r.from_date, to: r.to_date }));
     D.calendar = {
       vehicles: (await calQ('vehicle_commitments', 'vehicle_id')).map(r => Object.assign({ vehicleId: r.owner_id }, cal(r))),
       drivers: (await calQ('driver_commitments', 'driver_id')).map(r => Object.assign({ driverId: r.owner_id }, cal(r))),

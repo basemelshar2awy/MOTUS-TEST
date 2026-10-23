@@ -1,4 +1,19 @@
 # Changelog
+## 1.1.0-preview.1 — review build (steps 1–6)
+- Contains company activities, vehicle types, the unified calendar, country packs, one Sabeel account per person and operating contracts (migrations 003–008, applied by Update-Motus.ps1; tested on a 1.0.0 database with data).
+- `Load-DemoData.cmd` (test servers only): adds review companies DTR (tourism), DCG (cargo), DKS (Saudi Arabia) and DNW (new, no data) with sample data, a driver working for two companies and operating contracts, and prints their sign-ins once.
+
+## Unreleased — operating contracts and trip sources
+- Operating contracts: the company rents vehicles out on terms priced in advance — with or without its driver, per trip or per period (week / 2 weeks / month, also the billing cycle), exclusive in set working hours and days or allowing extra work. The company (operator) keeps paying maintenance, fuel and oils.
+- Whoever runs the work — MOTUS, a Sabeel module or an outside system — confirms each finished trip (screen, or `POST /api/v1/contracts/{id}/trips`, safe to retry with its own reference). MOTUS prices it from the contract and moves the odometer by the reported distance.
+- Every trip says where it came from (MOTUS / Sabeel module / outside system) and, for contract work, which contract; trips list filter and trip page show it.
+- An exclusive contract keeps its vehicles (and drivers, when with driver) out of other bookings in its hours only; extra work outside them is allowed.
+- Billing: per-trip contracts bill confirmed trips × rate; per-period contracts bill vehicles × cycles, a vehicle that joined or left mid-cycle pays its share of days. Each period is billed once, on the new "Revenue – operating contracts" account (4106).
+- Kilometres: open (no limit) or an allowance per vehicle per cycle or per trip, with a rate for each extra kilometre billed with the cycle; a vehicle on the contract for part of a cycle gets the same share of the allowance as of the price. Reported km are locked once a period is billed.
+- Extra work of contract vehicles outside the contract is a normal booking priced on its own at its time; the contract page lists it.
+- Screens: Operations → Operating contracts (list, contract page, new contract, confirm trip, bill, add/remove vehicle, end).
+- Migration `008_contracts.sql`.
+
 ## Unreleased — one Sabeel account per person
 - An account is the person (email and/or mobile number, password, language); a membership gives it a role in a company. One account can work for several companies with a different role in each, and switch between them from the top bar.
 - Adding someone whose email or mobile already has a Sabeel account sends an invitation; the person accepts or declines after signing in. A company cannot reset the password or change the name of an account other companies also use.

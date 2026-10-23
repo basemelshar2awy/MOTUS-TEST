@@ -378,3 +378,5 @@ pre.code { display: block; padding: 12px; overflow: auto; white-space: pre; max-
 .my-trips { display: grid; gap: 12px; }
 .my-trip { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
 .my-trip .route { font-size: 16px; font-weight: 700; }
+/* contracts: vehicle picker */
+.check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px 12px; max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--motus-border); border-radius: 8px; }
