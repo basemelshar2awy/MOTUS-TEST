@@ -213,6 +213,9 @@
   U.vtype = t => M.vehicleClasses[t] ? M.L(M.vehicleClasses[t].name) : (t || '—');
   /* a vehicle's capacity in words: seats for passenger vehicles, payload for cargo ones */
   U.capacity = v => (v.seats > 0 ? `${v.seats} ${M.tt('مقعد', 'seats')}` : '') + ((v.payloadKg || 0) > 0 ? `${v.seats > 0 ? ' · ' : ''}${M.n0(v.payloadKg)} ${M.tt('كجم', 'kg')}` : '');
+  /* a form field for an identity number, labelled and checked the way the company's country writes it */
+  U.idField = (f, key, fallback, value) => { const p = M.field(key, fallback); return { f, label: M.L(p.label), value, help: p.hint ? M.L(p.hint) : '', attrs: `dir="ltr" inputmode="numeric"${p.placeholder ? ` placeholder="${p.placeholder}"` : ''}${p.pattern ? ` pattern="${p.pattern.replace(/^\^|\$$/g, '')}"` : ''}` }; };
+  U.licenseOptions = () => (M.pack ? M.pack.licenseClasses : [['first', { ar: 'أولى', en: 'First' }], ['second', { ar: 'ثانية', en: 'Second' }], ['third', { ar: 'ثالثة', en: 'Third' }], ['professional', { ar: 'مهنية', en: 'Professional' }]]).map(([k, n]) => [k, M.L(n)]);
   U.catName = code => { const k = (M.vehicleCategories || []).find(x => x.code === code); return k ? M.L(k.name) : (code || '—'); };
   U.FUELS = ['diesel', 'gasoline', 'electric', 'hybrid', 'cng'];
   U.fuelName = f => ({ diesel: M.tt('سولار', 'Diesel'), gasoline: M.tt('بنزين', 'Gasoline'), electric: M.tt('كهرباء', 'Electric'), hybrid: M.tt('هايبرد', 'Hybrid'), cng: M.tt('غاز طبيعي', 'CNG') })[f] || f;

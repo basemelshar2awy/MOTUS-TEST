@@ -8,25 +8,32 @@ const { round2 } = require('./validate');
 
 let TZ = 'Africa/Cairo';
 const setTimezone = tz => { TZ = tz; };
+/* the company's time zone for the current request (set by withTz), else the server default */
+const { AsyncLocalStorage } = require('async_hooks');
+const tzStore = new AsyncLocalStorage();
+const tz = () => { const s = tzStore.getStore(); return (s && s.tz) || TZ; };
+const withTz = (zone, fn) => tzStore.run({ tz: zone || TZ }, fn);
+/* the rest of the current request runs in this zone (used after authenticating an API key) */
+const enterTz = zone => tzStore.enterWith({ tz: zone || TZ });
 function today() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 function nowLocal() {
-  const p = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+  const p = new Intl.DateTimeFormat('en-GB', { timeZone: tz(), hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   return p.replace(/^24/, '00');
 }
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const diffDays = (a, b) => Math.round((Date.parse(a + 'T00:00:00Z') - Date.parse(b + 'T00:00:00Z')) / 86400000);
 const fmtTs = d => {
   if (!d) return null;
-  const s = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  const s = new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
   return s.replace(',', '').replace(' 24:', ' 00:');
 };
 
 /* ---------- company info cached per transaction ---------- */
 async function company(c, ctx) {
   if (ctx._company) return ctx._company;
-  const r = await c.query('SELECT id, code, name_ar, name_en, currency FROM companies WHERE id = $1', [ctx.companyId]);
+  const r = await c.query('SELECT id, code, name_ar, name_en, currency, country, timezone FROM companies WHERE id = $1', [ctx.companyId]);
   if (!r.rows[0]) throw notFound('company');
   ctx._company = r.rows[0];
   return ctx._company;
@@ -183,4 +190,4 @@ async function lock(c, table, id, what) {
   return r.rows[0];
 }
 
-module.exports = { today, nowLocal, addDays, diffDays, fmtTs, setTimezone, company, settings, DEFAULT_SETTINGS, nextNumber, audit, emit, touch, post, expense, stockMove, mustExist, lock, accounts, vehicleCode, EXP_ACCOUNT, CREDIT_ACCOUNT };
+module.exports = { today, nowLocal, addDays, diffDays, fmtTs, setTimezone, withTz, enterTz, tz, company, settings, DEFAULT_SETTINGS, nextNumber, audit, emit, touch, post, expense, stockMove, mustExist, lock, accounts, vehicleCode, EXP_ACCOUNT, CREDIT_ACCOUNT };

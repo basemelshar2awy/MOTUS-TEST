@@ -5,6 +5,7 @@
 const { define, G } = require('./registry');
 const V = require('../lib/validate');
 const core = require('../lib/core');
+const countries = require('../lib/countries');
 const { insert, update, defined } = require('../lib/sql');
 const { bad, conflict, notFound } = require('../lib/errors');
 
@@ -23,15 +24,16 @@ async function createInvoice(c, ctx, client, lines, opts) {
   const due = opts.dueDate || core.addDays(issue, client.terms || 0);
   if (due < issue) throw bad('dueDate', 'تاريخ الاستحقاق قبل تاريخ الإصدار', 'The due date is before the issue date', 'dueDate');
   const taxRate = opts.taxRate != null ? opts.taxRate : s.vatRate;
-  const currency = client.currency || 'EGP';
-  const rate = currency === 'EGP' ? 1 : (opts.rate || (currency === 'USD' ? s.usdRate : null));
+  const base = (await core.company(c, ctx)).currency;   // the company's currency (country pack)
+  const currency = client.currency || base;
+  const rate = currency === base ? 1 : (opts.rate || (currency === 'USD' ? s.usdRate : null));
   if (!rate) throw bad('rate', 'أدخل سعر الصرف لعملة العميل', "Enter the exchange rate for the client's currency", 'rate');
   const sub = round2(lines.reduce((x, l) => x + l.qty * l.unit, 0));
   const discount = round2(opts.discount || 0);
   if (discount > sub) throw bad('discount', 'الخصم أكبر من قيمة الفاتورة', 'The discount is larger than the invoice amount', 'discount');
   const taxable = sub - discount, tax = round2(taxable * taxRate), total = round2(taxable + tax);
   const number = await core.nextNumber(c, ctx, 'INV', issue);
-  const inv = await insert(c, 'invoices', { company_id: ctx.companyId, number, client_id: client.id, issue_date: issue, due_date: due, currency, rate, subtotal: sub, discount, tax, total, paid: 0, status: 'issued', source: opts.source, created_by: ctx.user.name });
+  const inv = await insert(c, 'invoices', { company_id: ctx.companyId, number, client_id: client.id, issue_date: issue, due_date: due, currency, rate, subtotal: sub, discount, tax, total, paid: 0, status: 'issued', source: opts.source, einv_provider: countries.pack((await core.company(c, ctx)).country).einvoice.code, created_by: ctx.user.name });
   let n = 0;
   for (const l of lines) await insert(c, 'invoice_lines', { company_id: ctx.companyId, invoice_id: inv.id, line_no: ++n, description_ar: l.ar, description_en: l.en, trip_id: l.tripId || null, program_id: l.programId || null, booking_id: l.bookingId || null, qty: l.qty, unit: l.unit, discount: 0, tax_rate: taxRate, total: round2(l.qty * l.unit) });
   // journal in company currency

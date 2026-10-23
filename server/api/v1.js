@@ -135,6 +135,7 @@ async function handle(req, res, url, ip) {
   const q = url.searchParams;
   try {
     const k = await authenticate(req);
+    core.enterTz((await db.platform(c => c.query('SELECT timezone FROM companies WHERE id = $1', [k.companyId]))).rows[0].timezone);
     const [name, a, b] = parts;
     const method = req.method;
     let out;

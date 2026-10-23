@@ -1,4 +1,11 @@
 # Changelog
+## Unreleased — country packs (Egypt, Saudi Arabia)
+- A company belongs to one country (`EG` or `SA`). Its country pack sets the currency (EGP / SAR), VAT (14% / 15%), the e-invoice authority (ETA / ZATCA), the time zone (Cairo / Riyadh), identity fields and their formats (tax no., commercial register, national ID / Iqama), driving-license classes, starting prices and the starting places and routes.
+- Chosen when the company is created (Egypt by default). The Sabeel team can change it from the platform screen until the company issues its first invoice; after that it is locked (also by a database trigger). A company working in two countries is two companies.
+- Everything a company does runs on its own clock: dates, "today", trip times and reports use the company's time zone.
+- Platform screen: filter by country, country column with a lock mark, change-country action, country and city on the new company form.
+- Migration `006_country.sql`: every existing company is Egyptian, every existing invoice is ETA.
+
 ## Unreleased — real time and the unified calendar
 - Trips are real moments in time (`starts_at` / `ends_at`, in the company's time zone). A night or long trip ends on the next day instead of being cut at 23:59.
 - Every scheduled or running trip and every driver leave sits on the vehicle's and driver's calendar (`vehicle_commitments`, `driver_commitments`). The database refuses two overlapping commitments for the same vehicle or driver, whoever writes them (screens, Open API, Sabeel modules, external systems); the 30-minute gap stays an application rule.

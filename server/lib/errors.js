@@ -22,7 +22,8 @@ function fromPg(e) {
     case '23514': return bad('check', 'قيمة غير مسموح بها: ' + (e.message || ''), 'Value not allowed: ' + (e.message || ''));
     case '23502': return bad('required', 'حقل مطلوب ناقص', 'A required field is missing' + (e.column ? ` (${e.column})` : ''));
     case '22P02': case '22007': case '22008': case '22003': return bad('format', 'صيغة قيمة غير صحيحة', 'A value has an invalid format');
-    case 'P0001': return bad('rule', e.message.includes('period') ? 'الفترة المحاسبية مقفلة ولا يمكن التسجيل فيها' : e.message, e.message);
+    case 'P0001': if (e.message === 'country_locked') return conflict('country_locked', 'بلد الشركة مقفول لأنها أصدرت فواتير. الشركة اللي شغالة في بلد تاني تتعمل كشركة جديدة.', 'The company country is locked because it has issued invoices. A company working in another country is set up as a new company.');
+      return bad('rule', e.message.includes('period') ? 'الفترة المحاسبية مقفلة ولا يمكن التسجيل فيها' : e.message, e.message);
     case '23P01': return e.constraint && e.constraint.startsWith('driver_')
       ? conflict('driver_busy', 'السائق مشغول في الفترة دي (متسجّل له رحلة أو إجازة في نفس الوقت)', 'The driver is already booked for this period (a trip or leave at the same time)')
       : conflict('vehicle_busy', 'المركبة مشغولة في الفترة دي (متسجّل لها التزام تاني في نفس الوقت)', 'The vehicle is already booked for this period (another commitment at the same time)');

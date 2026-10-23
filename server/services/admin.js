@@ -7,6 +7,7 @@ const V = require('../lib/validate');
 const core = require('../lib/core');
 const activities = require('../lib/activities');
 const vtypes = require('../lib/vehicletypes');
+const countries = require('../lib/countries');
 const D = require('../lib/defaults');
 const auth = require('../lib/auth');
 const secrets = require('../lib/secrets');
@@ -21,6 +22,7 @@ const COMPANY_ROLES = ['company_admin', 'fleet_manager', 'operations', 'accounta
 define('company.update', G.admin, async (ctx, i, c) => {
   const name = P(i, 'name', V.text2, { max: 160 });
   const f = defined({ name_ar: name ? name.ar : undefined, name_en: name ? name.en : undefined, tax_no: P(i, 'taxNo', V.str, { max: 30, def: '' }), fy_start: P(i, 'fyStart', V.str, { max: 5, re: /^\d\d-\d\d$/ }) });
+  if (f.tax_no) countries.check((await core.company(c, ctx)).country, 'taxNo', f.tax_no, 'taxNo');
   if (Object.keys(f).length) {
     const cols = Object.keys(f);
     await c.query(`UPDATE companies SET ${cols.map((k, n) => `${k} = $${n + 1}`).join(', ')}, updated_at = now() WHERE id = $${cols.length + 1}`, [...cols.map(k => f[k]), ctx.companyId]);

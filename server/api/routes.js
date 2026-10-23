@@ -4,6 +4,7 @@
 const crypto = require('crypto');
 const db = require('../lib/db');
 const activities = require('../lib/activities');
+const countries = require('../lib/countries');
 const core = require('../lib/core');
 const log = require('../lib/log');
 const secrets = require('../lib/secrets');
@@ -58,11 +59,12 @@ async function sessionPayload(u) {
       out.companies = (await c.query("SELECT id, code, name_ar, name_en FROM companies WHERE status = 'active' ORDER BY code")).rows.map(r => ({ id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar } }));
       out.company = out.companies.find(x => x.id === u.companyId) || null;
     } else if (u.companyId) {
-      const r = (await c.query('SELECT id, code, name_ar, name_en, currency FROM companies WHERE id = $1', [u.companyId])).rows[0];
-      if (r) { out.company = { id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar }, currency: r.currency }; out.companies = [out.company]; }
+      const r = (await c.query('SELECT id, code, name_ar, name_en, currency, country FROM companies WHERE id = $1', [u.companyId])).rows[0];
+      if (r) { out.company = { id: r.id, code: r.code, name: { ar: r.name_ar, en: r.name_en || r.name_ar }, currency: r.currency, country: r.country }; out.companies = [out.company]; }
     }
   });
   out.activityCatalog = activities.CATALOG;
+  out.countries = countries.CODES.map(c => countries.publicPack(c));
   if (out.company) out.company.activities = await db.read(out.company.id, c => activities.enabled(c, {}));
   return out;
 }
@@ -150,7 +152,8 @@ router.add('POST', '/api/erp/push', async (req, res) => {
 
 /* ---------- platform (super admin) ---------- */
 const superOnly = async req => { const u = await requireUser(req); if (u.role !== 'super_admin') throw forbidden(); return u; };
-router.add('GET', '/api/platform/companies', async (req, res) => { await superOnly(req); send(res, 200, { companies: await platform.listCompanies() }); });
+router.add('GET', '/api/platform/companies', async (req, res, p, url) => { await superOnly(req); const country = url.searchParams.get('country'); send(res, 200, { companies: await platform.listCompanies({ country: country || null }), countries: countries.CODES.map(c => countries.publicPack(c)) }); });
+router.add('POST', '/api/platform/companies/:id/country', async (req, res, p) => { const u = await superOnly(req); const out = await platform.setCountry(u, p.id, await json(req, 1024)); snapshot.invalidate(p.id); send(res, 200, out); });
 router.add('POST', '/api/platform/companies', async (req, res) => { const u = await superOnly(req); send(res, 201, await platform.createCompany(u, await json(req, 64 * 1024))); });
 router.add('POST', '/api/platform/companies/:id/activities', async (req, res, p) => {
   const u = await superOnly(req);
