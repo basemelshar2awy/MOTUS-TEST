@@ -6,7 +6,7 @@ const { define, G } = require('./registry');
 const V = require('../lib/validate');
 const core = require('../lib/core');
 const { insert, update, defined } = require('../lib/sql');
-const { bad, conflict, notFound } = require('../lib/errors');
+const { bad, conflict, notFound, forbidden } = require('../lib/errors');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const P = (o, f, fn, ...a) => (has(o, f) ? fn(o, f, ...a) : undefined);
@@ -130,5 +130,17 @@ define('event.create', G.ops, async (ctx, i, c) => {
   await core.audit(c, ctx, 'create', 'event', `${v.code} ${e.type}`);
   return { id: e.id };
 });
+
+/* the driver app sends the phone's location while the driver's trip is running: it becomes the
+   trip vehicle's position (live map, route history, overspeed alerts), like a tracker's */
+define('me.position', ['driver'], async (ctx, i, c) => {
+  if (!ctx.user.driverId) throw forbidden();
+  const t = (await c.query("SELECT vehicle_id FROM trips WHERE driver_id = $1 AND status = 'running' ORDER BY starts_at DESC LIMIT 1", [ctx.user.driverId])).rows[0];
+  if (!t || !t.vehicle_id) return { stored: 0, running: false };
+  const pts = (Array.isArray(i.positions) ? i.positions : [i]).slice(0, 500).map(p => ({ vehicleId: t.vehicle_id, at: p.at || new Date().toISOString(), lat: p.lat, lng: p.lng, speed: p.speed, heading: p.heading }));
+  const r = await ingestPositions(ctx, c, pts);
+  if (r.events) await core.touch(c, ctx);
+  return { stored: r.stored, running: true };
+}, { noTouch: true });
 
 module.exports = { ingestPositions };

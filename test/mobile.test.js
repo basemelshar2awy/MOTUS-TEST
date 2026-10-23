@@ -137,7 +137,7 @@ test('devices register for push; events reach Android/iPhone through Firebase an
   got = [];
   await ok(a.do('trip.cancel', { id: b.trip.id, reason: 'Client changed plans' }));
   let row;
-  for (let i = 0; i < 40; i++) { row = (await env.sql("SELECT * FROM push_queue WHERE event = 'trip.cancelled'")).rows[0]; if (row && row.status !== 'pending') break; await new Promise(r => setTimeout(r, 250)); }
+  for (let i = 0; i < 40; i++) { row = (await env.sql("SELECT * FROM push_queue WHERE event = 'trip.cancelled' AND driver_id IS NULL")).rows[0]; if (row && row.status !== 'pending') break; await new Promise(r => setTimeout(r, 250)); }
   assert.equal(row.status, 'sent', JSON.stringify(row));
   assert.equal(row.sent_count, 3);
   const fcm = got.filter(g => g.url === '/fcm/v1/projects/motus-test/messages:send');
@@ -168,4 +168,45 @@ test('an app session lasts longer than a browser session and survives the browse
   await env.sql("UPDATE sessions SET last_seen_at = now() - interval '3 days' WHERE kind = 'mobile'");
   await H.signIn(env, 'admin@aaa.test', H.PW);   // a browser sign-in clears old browser sessions only
   assert.equal((await app(token).get('/api/session')).data.user.role, 'company_admin');
+});
+
+test('the driver app: sign in by mobile number, own trips, a push for a new trip, start, phone location, finish', async () => {
+  const admin = app(await signInApp());
+  const d = await ok(admin.do('driver.create', { name: { ar: 'كريم سامي', en: 'Karim Samy' }, phone: '01005556677', licenseExpiry: '2031-01-01' }));
+  const acc = await ok(admin.do('driver.account', { driverId: d.id }));
+  await H.signIn(env, '01005556677', acc.temporaryPassword, 'Driver-App-88-Go!');   // first sign-in sets the driver's own password
+  const r = await app(null).post('/api/login', { login: '010 0555 6677', password: 'Driver-App-88-Go!', client: 'mobile' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const drv = app(r.data.token);
+  assert.equal((await ok(drv.get('/api/session'))).user.role, 'driver');
+  await ok(drv.post('/api/mobile/devices', { platform: 'android', pushToken: 'driver-token-' + 'e'.repeat(30), app: 'driver', lang: 'ar' }));
+  assert.equal((await drv.post('/api/mobile/link', { route: 'reports' })).status, 200, 'link itself is allowed; the web screen keeps the driver limits');
+
+  // the company assigns the driver a trip: the driver's phone (and only it) hears about it
+  const vv = await ok(admin.do('vehicle.create', { type: 'MB', plate: 'DRV 1', purchaseDate: '2024-01-01', purchasePrice: 900000, odometer: 5000, licenseExpiry: '2031-01-01', insuranceExpiry: '2031-01-01', driverId: d.id }));
+  const cl = await ok(admin.do('client.create', { name: 'Driver App Client', type: 'agency' }));
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date());
+  got = [];
+  const b = await ok(admin.do('booking.create', { clientId: cl.id, date: day, time: '06:00', pax: 8, pickup: 'CAIAP', destination: 'CAI', vehicleType: 'MB', price: 700, vehicleId: vv.id }));
+  let row;
+  for (let i = 0; i < 40; i++) { row = (await env.sql("SELECT * FROM push_queue WHERE event = 'trip.assigned' AND driver_id = $1", [d.id])).rows[0]; if (row && row.status !== 'pending') break; await new Promise(res => setTimeout(res, 250)); }
+  assert.equal(row.driver_id, d.id);
+  assert.equal(row.status, 'sent', JSON.stringify(row));
+  assert.equal(row.sent_count, 1);
+  const msg = JSON.parse(got.find(g => g.url.startsWith('/fcm/')).body).message;
+  assert.equal(msg.token, 'driver-token-' + 'e'.repeat(30));
+  assert.match(msg.notification.title, /رحلة جديدة/);
+
+  // own trips, start, the phone's location while running, finish
+  const list = await ok(drv.do('me.trips', {}));
+  assert.deepEqual(list.trips.map(t => t.id), [b.trip.id]);
+  assert.deepEqual(await ok(drv.do('me.position', { lat: 30.1, lng: 31.4 })), { stored: 0, running: false }, 'nothing is recorded outside a running trip');
+  await ok(drv.do('me.tripStart', { id: b.trip.id, odometer: 5000 }));
+  const p = await ok(drv.do('me.position', { positions: [{ lat: 30.11, lng: 31.41, speed: 40, at: new Date(Date.now() - 30000).toISOString() }, { lat: 30.12, lng: 31.42, speed: 45 }] }));
+  assert.deepEqual(p, { stored: 2, running: true });
+  const live = await ok(admin.get('/api/live'));
+  assert.equal(live.positions.find(x => x.vehicleId === vv.id).lat, 30.12, 'the live map shows the phone location');
+  await ok(drv.do('me.tripComplete', { id: b.trip.id, endKm: 5042, expenses: { tolls: 15, parking: 0 } }));
+  assert.equal((await env.sql('SELECT status, end_km FROM trips WHERE id = $1', [b.trip.id])).rows[0].status, 'completed');
+  assert.equal((await drv.do('positions.ingest', { positions: [] })).status, 403, 'the fleet ingest stays closed');
 });

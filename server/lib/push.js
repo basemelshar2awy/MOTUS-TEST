@@ -4,6 +4,7 @@
    - A worker sends each queued notification to the registered devices of the company's members
      whose role should hear about it: Firebase Cloud Messaging for Android and iPhone, Huawei Push
      Kit for Huawei phones (no Google services). Each message goes in the device's language.
+   - The trip's own driver hears about a new trip or a cancelled one on the driver app.
    - Nothing is sent until the server has the credentials (config.push); queued rows are then
      marked 'skipped'. Tokens the services report as gone are deleted. */
 const crypto = require('crypto');
@@ -22,10 +23,20 @@ const TEMPLATES = {
   'payment.received': { roles: MONEY, external: true, ar: ['تحصيل جديد {number}', 'اتسجل مبلغ {amount}.'], en: ['Payment {number} received', 'Amount {amount} recorded.'] },
   'tracking.alert': { roles: OPS, ar: ['تنبيه تتبع: {vehicle}', '{type} الساعة {time}.'], en: ['Tracking alert: {vehicle}', '{type} at {time}.'] },
 };
+/* event -> what the trip's own driver hears on the driver app (data.driverId says which driver) */
+const DRIVER = {
+  'trip.assigned': { ar: ['رحلة جديدة {number}', '{date} الساعة {time} · {vehicle}'], en: ['New trip {number}', '{date} at {time} · {vehicle}'] },
+  'trip.cancelled': { ar: ['اتلغت رحلتك {number}', 'افتح التطبيق وشوف رحلاتك.'], en: ['Your trip {number} was cancelled', 'Open the app to see your trips.'] },
+};
 const fill = (s, d) => s.replace(/\{(\w+)\}/g, (_, k) => (d && d[k] != null ? String(d[k]) : ''));
 
 /* called from core.emit inside the change's transaction */
 async function enqueue(c, ctx, event, data) {
+  const dt = DRIVER[event];
+  if (dt && data && data.driverId) {
+    await c.query('INSERT INTO push_queue (company_id, event, title_ar, title_en, body_ar, body_en, data, roles, driver_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [ctx.companyId, event, fill(dt.ar[0], data), fill(dt.en[0], data), fill(dt.ar[1], data), fill(dt.en[1], data), JSON.stringify({ event, id: String(data.id || ''), number: String(data.number || '') }), [], data.driverId]);
+  }
   const t = TEMPLATES[event];
   if (!t) return;
   if (t.external && (ctx.source || 'ui') === 'ui') return;   // the person who did it in the dashboard already knows
@@ -92,8 +103,11 @@ async function tick() {
     const hms = !!(CFG.hmsAppId && CFG.hmsClientSecret);
     for (const q of rows) {
       // the company's members (active, in a role that should hear it) with a registered app
-      const users = (await db.read(q.company_id, c => c.query("SELECT user_id FROM memberships WHERE status = 'active' AND role = ANY($1)", [q.roles]))).rows.map(r => r.user_id);
-      const devices = users.length ? (await db.platform(c => c.query("SELECT * FROM mobile_devices WHERE user_id = ANY($1::uuid[]) AND app = 'admin'", [users]))).rows : [];
+      // (or, for a driver message, that driver's own account on the driver app)
+      const users = (await db.read(q.company_id, c => (q.driver_id
+        ? c.query("SELECT user_id FROM memberships WHERE status = 'active' AND role = 'driver' AND driver_id = $1", [q.driver_id])
+        : c.query("SELECT user_id FROM memberships WHERE status = 'active' AND role = ANY($1)", [q.roles])))).rows.map(r => r.user_id);
+      const devices = users.length ? (await db.platform(c => c.query('SELECT * FROM mobile_devices WHERE user_id = ANY($1::uuid[]) AND app = $2', [users, q.driver_id ? 'driver' : 'admin']))).rows : [];
       let sent = 0, err = null, usable = 0;
       for (const d of devices) {
         if (d.platform === 'huawei' ? !hms : !acc) continue;
@@ -117,4 +131,4 @@ function start(cfg, opts = {}) { CFG = cfg; allowPrivate = !!opts.allowPrivate; 
 function stop() { if (timer) clearInterval(timer); timer = null; }
 function configure(cfg, opts = {}) { CFG = cfg; allowPrivate = !!opts.allowPrivate; }
 
-module.exports = { enqueue, start, stop, tick, configure, TEMPLATES };
+module.exports = { enqueue, start, stop, tick, configure, TEMPLATES, DRIVER };

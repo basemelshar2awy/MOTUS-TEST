@@ -1,5 +1,10 @@
 # MOTUS mobile apps
 
+Two Flutter apps, same colors and fonts (navy `#08264A`, Cairo + Inter), same server routes:
+
+- `admin/` — for the company's staff (below).
+- `driver/` — for drivers (see **The driver app**).
+
 `admin/` — the MOTUS admin app (company admins, fleet managers, dispatch, accountants, maintenance,
 viewers). One Flutter codebase, three builds:
 
@@ -10,7 +15,7 @@ viewers). One Flutter codebase, three builds:
 | iPhone | App Store | Firebase (APNs) | `flutter build ipa --dart-define=PUSH=fcm` |
 
 Add `--dart-define=MOTUS_URL=https://your-server` to change the default server (the sign-in screen
-can also change it). The driver app comes next, on the same server routes.
+can also change it). The driver app builds the same way from `driver/`.
 
 ## What the app does
 
@@ -33,11 +38,31 @@ can also change it). The driver app comes next, on the same server routes.
   from an outside system, payment received from an outside system, tracking alerts — to the
   company's members whose role should hear them, in each phone's language.
 
+## The driver app
+
+Made to be used with one thumb, in the vehicle:
+
+- **Sign in** with the mobile number and the password the company created for the driver
+  (Drivers → Driver account in the dashboard); the first sign-in asks for the driver's own password.
+- **Home:** the trip to do now (the one running, else the next one) with its time, from → to, the
+  vehicle and the load, and one big button: **Start trip** or **Finish trip**. Below it the rest of
+  today, tomorrow and later.
+- **Start:** the odometer (filled in from the vehicle). **Finish:** the odometer, tolls and parking
+  paid, and for a cargo shipment the consignee's delivery code.
+- **Trip page:** the stops (for school and staff lines too) with a **Map** button that opens
+  navigation in the phone's maps app.
+- **Location:** while a trip is running and the app is open, the phone's location goes to the server
+  every 30 seconds and shows on the company's live map (`me.position`), like a tracker. Nothing is
+  sent outside a running trip.
+- **Notifications** (once push is configured): a new trip, a cancelled trip.
+- Arabic and English; the driver sees no prices and no client details (the server hides them).
+
 ## Building on GitHub
 
 `.github/workflows/mobile.yml` runs on every push that touches `mobile/`:
-analyze → tests → Android (Google) APK → Huawei APK → iPhone build without signing.
-The APKs are on the **mobile-latest** release page of the repository (and as run artifacts).
+analyze → tests → Android (Google) APK → Huawei APK → iPhone build without signing, for both apps.
+The APKs (`MOTUS-admin-*.apk`, `MOTUS-driver-*.apk`) are on the **mobile-latest** release page of the
+repository (and as run artifacts).
 The first run generates the `android/` and `ios/` folders with `flutter create` and
 `tool/configure_platforms.py` (app name, permissions, the google/huawei flavors) and commits them.
 
@@ -46,7 +71,7 @@ The first run generates the `android/` and `ios/` folders with `flutter create` 
 These cannot live in the repository; add them as GitHub secrets or on the build machine:
 
 - **Google Play:** an upload keystore (`android/key.properties` + `.jks`), the Play Console app
-  `com.sabeel.motus.motus_admin`, and for push a Firebase project: `android/app/google-services.json`,
+  `com.sabeel.motus.motus_admin` (and `com.sabeel.motus.motus_driver`), and for push a Firebase project: `android/app/google-services.json`,
   `ios/Runner/GoogleService-Info.plist`, and on the MOTUS server `MOTUS_FCM_SERVICE_ACCOUNT` (path to
   the service-account JSON).
 - **Huawei AppGallery:** an AppGallery Connect project, `android/app/agconnect-services.json`, the
