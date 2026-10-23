@@ -24,7 +24,7 @@ before(async () => {
   cargo = await H.signIn(env, 'admin@crg.test', co.data.temporaryPassword);
   ids.cl = (await ok(cargo.do('client.create', { name: 'Shipper' }))).id;
   ids.d = (await ok(cargo.do('driver.create', { name: 'Truck Driver', licenseExpiry: '2031-01-01' }))).id;
-  ids.v = (await ok(cargo.do('vehicle.create', { type: 'MB', plate: 'C 1', purchaseDate: '2024-01-01', purchasePrice: 900000, licenseExpiry: '2031-01-01', insuranceExpiry: '2031-01-01', driverId: ids.d }))).id;
+  ids.v = (await ok(cargo.do('vehicle.create', { type: 'VN', plate: 'C 1', purchaseDate: '2024-01-01', purchasePrice: 900000, licenseExpiry: '2031-01-01', insuranceExpiry: '2031-01-01', driverId: ids.d }))).id;
 });
 after(async () => { await env.destroy(); });
 
@@ -54,7 +54,7 @@ test('a cargo company cannot use tourism tools: programs are refused on the serv
 });
 
 test('tourism-only fields of shared actions are dropped for a company without tourism', async () => {
-  const b = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(3), time: '09:00', pax: 2, pickup: 'CAI', destination: 'ALX', vehicleType: 'MB', price: 500, flight: 'MS 777' }));
+  const b = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(3), time: '09:00', pax: 2, pickup: 'CAI', destination: 'ALX', vehicleType: 'VN', price: 500, flight: 'MS 777' }));
   const row = (await env.sql('SELECT flight FROM bookings WHERE id = $1', [b.id])).rows[0];
   assert.equal(row.flight, null, 'flight not stored');
   await ok(cargo.do('booking.assign', { bookingId: b.id, vehicleId: ids.v }));

@@ -30,8 +30,12 @@ async function load(companyId) {
     const tourism = acts.includes('tourism');
 
     D.branches = (await q('SELECT * FROM branches ORDER BY code')).map(r => Object.assign(base(r), { code: r.code, city: r.city, name: L(r, 'name') }));
-    const vtypes = await q('SELECT * FROM vehicle_types ORDER BY array_position(ARRAY[\'LB\',\'MB\',\'MC\',\'SD\'], code)');
-    D.vehicleTypes = vtypes.map(r => Object.assign(base(r), { code: r.code, name: L(r, 'name'), seats: r.seats, fuel: r.fuel, oilKm: r.oil_km, lifeYears: N(r.life_years), lifeKm: r.life_km, salvagePct: N(r.salvage_pct), tank: N(r.tank_l), kmpl: N(r.kmpl), price: [N(r.price_min), N(r.price_max)], rateKm: N(r.rate_km), base: N(r.base_price), tollGate: N(r.toll_gate), oilCost: N(r.oil_cost), oilLiters: N(r.oil_liters), insurance: N(r.insurance), license: N(r.license), tires: r.tire_positions }));
+    const vtypes = await q('SELECT t.* FROM vehicle_types t JOIN vehicle_categories k ON k.code = t.category ORDER BY k.sort, t.code');
+    // categories the company can use (its activities) + any category one of its types already has
+    const cats = await q('SELECT * FROM vehicle_categories WHERE activities && $1::text[] OR code IN (SELECT category FROM vehicle_types) ORDER BY sort', [acts]);
+    D.vehicleCategories = cats.map(r => ({ code: r.code, name: L(r, 'name'), kind: r.kind, activities: r.activities, usable: r.activities.some(a => acts.includes(a)) }));
+    const usableCat = new Set(D.vehicleCategories.filter(k => k.usable).map(k => k.code));
+    D.vehicleTypes = vtypes.map(r => Object.assign(base(r), { code: r.code, name: L(r, 'name'), category: r.category, payloadKg: N(r.payload_kg), volumeM3: N(r.volume_m3), active: r.active, usable: r.active && usableCat.has(r.category), seats: r.seats, fuel: r.fuel, oilKm: r.oil_km, lifeYears: N(r.life_years), lifeKm: r.life_km, salvagePct: N(r.salvage_pct), tank: N(r.tank_l), kmpl: N(r.kmpl), price: [N(r.price_min), N(r.price_max)], rateKm: N(r.rate_km), base: N(r.base_price), tollGate: N(r.toll_gate), oilCost: N(r.oil_cost), oilLiters: N(r.oil_liters), insurance: N(r.insurance), license: N(r.license), tires: r.tire_positions }));
     const places = await q('SELECT * FROM places ORDER BY code');
     D.geofences = places.map(r => Object.assign(base(r), { code: r.code, name: L(r, 'name'), kind: r.kind, lat: r.lat, lng: r.lng, radiusM: r.radius_m, active: r.active }));
     D.routes = (await q('SELECT * FROM routes ORDER BY base_city, from_code, to_code')).map(r => ({ id: r.id, base: r.base_city, from: r.from_code, to: r.to_code, km: N(r.km), type: r.type, gates: r.toll_gates, hours: N(r.hours) }));
@@ -40,7 +44,7 @@ async function load(companyId) {
       code: r.code, plate: L(r, 'plate'), type: r.type, make: r.make, model: r.model, year: r.year, chassis: r.chassis, color: [r.color_ar || '', r.color_en || r.color_ar || ''], seats: r.seats, fuel: r.fuel,
       ownership: r.ownership, purchaseDate: r.purchase_date, purchasePrice: N(r.purchase_price), salvageValue: N(r.salvage_value), lifeYears: N(r.life_years), lifeKm: r.life_km,
       odometerStart: r.odometer_start, odometer: r.odometer, status: r.status, licenseExpiry: r.license_expiry, insuranceExpiry: r.insurance_expiry, insuranceAnnual: N(r.insurance_annual), licenseAnnual: N(r.license_annual),
-      driverId: r.driver_id, branchId: r.branch_id, tankL: N(r.tank_l),
+      driverId: r.driver_id, branchId: r.branch_id, tankL: N(r.tank_l), payloadKg: N(r.payload_kg), volumeM3: N(r.volume_m3),
     }));
     D.drivers = (await q('SELECT * FROM drivers ORDER BY code')).map(r => Object.assign(base(r), {
       code: r.code, name: L(r, 'name'), phone: r.phone, nationalId: r.national_id, licenseNo: r.license_no, licenseClass: r.license_class, licenseExpiry: r.license_expiry,
@@ -69,7 +73,7 @@ async function load(companyId) {
     D.trips.forEach(t => { if (t.bookingId) (tripIdsByBooking[t.bookingId] = tripIdsByBooking[t.bookingId] || []).push(t.id); });
     D.bookings = (await q('SELECT * FROM bookings WHERE date >= $1 OR status IN (\'tentative\',\'confirmed\') ORDER BY date, time', [since])).map(r => Object.assign(base(r), {
       number: r.number, clientId: r.client_id, programId: r.program_id, pax: r.pax, date: r.date, time: r.time, pickup: r.pickup, destination: r.destination, routeKm: N(r.route_km), routeType: r.route_type,
-      vehicleType: r.vehicle_type, price: N(r.price), paid: N(r.paid), status: r.status, cancelReason: r.cancel_reason_ar ? [r.cancel_reason_ar, r.cancel_reason_en || r.cancel_reason_ar] : null,
+      vehicleType: r.vehicle_type, loadKg: N(r.load_kg), price: N(r.price), paid: N(r.paid), status: r.status, cancelReason: r.cancel_reason_ar ? [r.cancel_reason_ar, r.cancel_reason_en || r.cancel_reason_ar] : null,
       flight: r.flight, unassigned: r.unassigned && r.status !== 'cancelled', notes: r.notes, tripIds: tripIdsByBooking[r.id] || [],
     }));
     D.passengers = (await q('SELECT p.* FROM trip_passengers p JOIN trips t ON t.id = p.trip_id WHERE t.date >= $1', [core.addDays(today, -30)])).map(r => ({ id: r.id, tripId: r.trip_id, name: r.name, nationality: r.nationality, passportNo: r.passport_no, hotel: r.hotel, pickupTime: r.pickup_time }));

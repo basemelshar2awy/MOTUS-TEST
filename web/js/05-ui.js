@@ -211,6 +211,11 @@
 
   /* entity labels */
   U.vtype = t => M.vehicleClasses[t] ? M.L(M.vehicleClasses[t].name) : (t || '—');
+  /* a vehicle's capacity in words: seats for passenger vehicles, payload for cargo ones */
+  U.capacity = v => (v.seats > 0 ? `${v.seats} ${M.tt('مقعد', 'seats')}` : '') + ((v.payloadKg || 0) > 0 ? `${v.seats > 0 ? ' · ' : ''}${M.n0(v.payloadKg)} ${M.tt('كجم', 'kg')}` : '');
+  U.catName = code => { const k = (M.vehicleCategories || []).find(x => x.code === code); return k ? M.L(k.name) : (code || '—'); };
+  U.FUELS = ['diesel', 'gasoline', 'electric', 'hybrid', 'cng'];
+  U.fuelName = f => ({ diesel: M.tt('سولار', 'Diesel'), gasoline: M.tt('بنزين', 'Gasoline'), electric: M.tt('كهرباء', 'Electric'), hybrid: M.tt('هايبرد', 'Hybrid'), cng: M.tt('غاز طبيعي', 'CNG') })[f] || f;
   U.vLabel = v => v && !v._missing ? `<a href="#vehicle.${v.id}" class="cell-main">${M.esc(v.code)}</a><div class="cell-sub">${M.esc(M.L(v.plate))} · ${M.esc(U.vtype(v.type))}</div>` : '—';
   U.dLabel = d => d && !d._missing ? `<a href="#driver.${d.id}">${M.esc(M.L(d.name))}</a>` : '—';
   U.cLabel = c => c && !c._missing ? `<a href="#client.${c.id}">${M.esc(M.L(c.name))}</a>` : '—';

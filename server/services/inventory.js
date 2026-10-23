@@ -39,7 +39,7 @@ function itemFields(i) {
     category: P(i, 'category', V.oneOf, CATS), unit: P(i, 'unit', V.oneOf, ['L', 'pc', 'set', 'kg']),
     min_stock: P(i, 'minStock', V.num, { min: 0 }), reorder_point: P(i, 'reorderPoint', V.num, { min: 0 }), max_stock: P(i, 'maxStock', V.num, { min: 0 }),
     serial: has(i, 'serial') ? V.bool(i, 'serial') : undefined, barcode: P(i, 'barcode', V.str, { max: 40, def: '' }),
-    compatible: has(i, 'compatible') ? V.arr(i, 'compatible', { max: 4 }).filter(x => ['LB', 'MB', 'MC', 'SD'].includes(x)) : undefined,
+    compatible: has(i, 'compatible') ? [...new Set(V.arr(i, 'compatible', { max: 40 }).map(String).filter(x => /^[A-Z0-9]{2,8}$/.test(x)))] : undefined,
     external_ref: P(i, 'externalRef', V.str, { max: 80 }),
   });
 }

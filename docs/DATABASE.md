@@ -7,3 +7,6 @@ Creating the first administrator: `2-Setup-Database.ps1` (or `node server/tools/
 
 ## Company activities (migration 003)
 `company_activities` — one row per company and activity (`tourism`, `education`, `intercity`, `staff`, `cargo`) with `enabled`, `enabled_at`, `disabled_at`. `company_activity_events` — append-only history of every enable/disable (the app role cannot update or delete it), used for billing by activity. Both have row level security. Migration 003 registers every existing company on `tourism`. `company_activity_list()` (security definer) gives the super-admin overview the activity codes only.
+
+## Vehicle types (migration 004)
+`vehicle_categories` — platform catalog (code, names, kind passenger/cargo/mixed, activities it serves); read-only for the app role. `vehicle_types` — per company: own code (`^[A-Z0-9]{2,8}$`), `category`, `seats` (0 allowed), `payload_kg`, `volume_m3`, `active`; a type needs seats or payload. `vehicles.type`, `bookings.vehicle_type`, `program_days.vehicle_type`, `subcontracts.vehicle_type` reference `(company_id, code)` of `vehicle_types`. `vehicles` and `bookings` gain `payload_kg` / `volume_m3` and `load_kg`. Starting types per category live in `server/lib/defaults.js` and are added when a company gets an activity.

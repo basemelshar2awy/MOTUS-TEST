@@ -17,7 +17,9 @@
     const bStart = toMin(b.time || '10:00'), bEnd = Math.min(1439, bStart + Math.round(hours * 60) + 15);
     return db.vehicles.filter(v => v.status !== 'sold').map(v => {
       const reasons = [], warns = [];
-      if (v.seats < b.pax) reasons.push([`السعة ${v.seats} مقعد أقل من ${b.pax} راكب`, `Capacity ${v.seats} is below ${b.pax} passengers`]);
+      if (v.seats > 0 && v.seats < b.pax) reasons.push([`السعة ${v.seats} مقعد أقل من ${b.pax} راكب`, `Capacity ${v.seats} is below ${b.pax} passengers`]);
+      if (!(v.seats > 0) && b.pax > 1) reasons.push(['المركبة دي للبضائع ومافيهاش كراسي ركاب', 'This vehicle carries cargo and has no passenger seats']);
+      if (b.loadKg && (v.payloadKg || 0) < b.loadKg) reasons.push([`الحمولة ${M.n0(v.payloadKg || 0)} كجم أقل من ${M.n0(b.loadKg)} كجم`, `Payload ${M.n0(v.payloadKg || 0)} kg is below ${M.n0(b.loadKg)} kg`]);
       if (v.status === 'maintenance') reasons.push(['المركبة في الصيانة', 'Vehicle is in the workshop']);
       if (v.status === 'stopped') reasons.push(['المركبة متوقفة', 'Vehicle is stopped']);
       const same = db.trips.filter(t => t.vehicleId === v.id && t.date === b.date && t.status !== 'cancelled');
@@ -43,7 +45,7 @@
       const branch = U.find('branches', v.branchId);
       const empty = branch && (branch.city === b.pickup || (b.pickup || '').startsWith(branch.city)) ? 8 : 60;
       const estCost = (km + empty) * costKm + (per.driver + per.licIns + per.depreciation) / Math.max(1, per.opDays);
-      const seatFit = 1 - Math.min(1, Math.max(0, v.seats - b.pax) / v.seats);
+      const seatFit = v.seats > 0 ? 1 - Math.min(1, Math.max(0, v.seats - b.pax) / v.seats) : (b.loadKg && v.payloadKg ? 1 - Math.min(1, Math.max(0, v.payloadKg - b.loadKg) / v.payloadKg) : 0.5);
       const score = reasons.length ? 0 : Math.round(100 * (0.35 * seatFit + 0.25 * (1 - Math.min(1, estCost / Math.max(1, b.price || estCost * 2))) + 0.2 * (1 - per.util) + 0.2 * (empty < 20 ? 1 : 0.3)) - warns.length * 6);
       return { v, ok: !reasons.length, reasons, warns: warns.concat(drv ? drv.w : []), driver: drv ? drv.d : null, estCost, empty, score, km };
     }).sort((a, b) => (b.ok - a.ok) || (b.score - a.score));
@@ -76,10 +78,11 @@
       { f: 'clientId', label: tt('العميل', 'Client'), type: 'select', options: db.clients.filter(c => c.status === 'active').map(c => [c.id, M.L(c.name)]), req: true },
       { f: 'date', label: tt('التاريخ', 'Date'), type: 'date', value: M.addDays(M.TODAY, 1), req: true, attrs: `min="${M.TODAY}"` },
       { f: 'time', label: tt('ميعاد الاستلام', 'Pickup time'), type: 'time', value: '10:00', req: true },
-      { f: 'pax', label: tt('عدد الركاب', 'Passengers'), type: 'number', value: 12, req: true, attrs: 'min="1" max="100"' },
+      { f: 'pax', label: tt('عدد الركاب', 'Passengers'), type: 'number', value: M.cargoTypes().length === M.usableTypes().length ? '' : 12, req: !M.cargoTypes().length, attrs: 'min="1" max="120"', help: M.cargoTypes().length ? tt('فاضي للبضائع', 'Leave empty for cargo') : '' },
+      M.cargoTypes().length ? { f: 'loadKg', label: tt('وزن الحمولة (كجم)', 'Load weight (kg)'), type: 'number', attrs: 'min="1"', help: tt('للبضائع بس', 'Cargo only') } : null,
       { f: 'pickup', label: tt('مكان الاستلام', 'Pickup'), type: 'select', options: pts.map(k => [k, U.place(k)]), value: pts.includes('CAIAP') ? 'CAIAP' : pts[0], req: true },
       { f: 'destination', label: tt('الوجهة', 'Destination'), type: 'select', options: pts.map(k => [k, U.place(k)]), value: pts.includes('CAI') ? 'CAI' : pts[0], req: true },
-      { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', options: Object.keys(M.vehicleClasses).map(k => [k, U.vtype(k)]), value: 'MC', req: true },
+      { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', options: M.usableTypes().map(k => [k, U.vtype(k)]), value: M.usableTypes().includes('MC') ? 'MC' : M.usableTypes()[0], req: true },
       { f: 'price', label: tt('السعر المتفق عليه', 'Agreed price'), type: 'number', req: true, attrs: 'min="0"', help: `<a href="#pricing" data-act="close-overlay">${tt('احسب السعر بالتسعير الذكي', 'Calculate with smart pricing')}</a>` },
       M.has('tourism') ? { f: 'flight', label: tt('رقم الطيران (اختياري)', 'Flight number (optional)'), attrs: 'placeholder="MS985" dir="ltr"' } : null,
       { f: 'status', label: tt('الحالة', 'Status'), type: 'select', options: [['confirmed', U.statusText('confirmed')], ['tentative', U.statusText('tentative')]] },
@@ -88,16 +91,17 @@
     ], 'bk')}<h3 style="font-size:15px;margin:16px 0 8px">${tt('مركبات متاحة مقترحة', 'Suggested available vehicles')}</h3><div id="bk-sugg"></div>`, `<button class="btn secondary" data-act="close-overlay">${tt('إلغاء', 'Cancel')}</button><button class="btn" data-act="save-booking">${tt('حفظ الحجز', 'Save booking')}</button>`);
     const g = f => document.querySelector(`#bk [data-f="${f}"]`);
     const upd = () => {
-      const b = { pax: +g('pax').value || 1, date: g('date').value, time: g('time').value || '10:00', pickup: g('pickup').value, destination: g('destination').value, vehicleType: g('vehicleType').value, price: +g('price').value };
+      const b = { pax: +g('pax').value || 1, loadKg: g('loadKg') ? +g('loadKg').value || null : null, date: g('date').value, time: g('time').value || '10:00', pickup: g('pickup').value, destination: g('destination').value, vehicleType: g('vehicleType').value, price: +g('price').value };
       const c = U.candidates(b).slice(0, 5);
-      document.getElementById('bk-sugg').innerHTML = `<label class="list-row" style="cursor:pointer"><input type="radio" name="bk-veh" value="" style="accent-color:#08264A"><div class="grow"><div class="t">${tt('بدون تخصيص الآن', 'Don’t assign now')}</div><div class="s">${tt('يظهر في لوحة التوزيع', 'It will show on the dispatch board')}</div></div></label>` + c.map((x, i) => `<label class="list-row" style="cursor:${x.ok ? 'pointer' : 'default'}"><input type="radio" name="bk-veh" value="${x.v.id}" data-d="${x.driver ? x.driver.id : ''}" ${x.ok ? '' : 'disabled'} ${i === 0 && x.ok ? 'checked' : ''} style="accent-color:#08264A"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${x.v.seats} ${tt('مقعد', 'seats')}</div><div class="s">${x.ok ? `${tt('السائق', 'Driver')}: ${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? U.badge(tt('متاحة', 'Available'), 'success') : U.badge(tt('غير متاحة', 'Unavailable'), 'danger')}</label>`).join('');
+      document.getElementById('bk-sugg').innerHTML = `<label class="list-row" style="cursor:pointer"><input type="radio" name="bk-veh" value="" style="accent-color:#08264A"><div class="grow"><div class="t">${tt('بدون تخصيص الآن', 'Don’t assign now')}</div><div class="s">${tt('يظهر في لوحة التوزيع', 'It will show on the dispatch board')}</div></div></label>` + c.map((x, i) => `<label class="list-row" style="cursor:${x.ok ? 'pointer' : 'default'}"><input type="radio" name="bk-veh" value="${x.v.id}" data-d="${x.driver ? x.driver.id : ''}" ${x.ok ? '' : 'disabled'} ${i === 0 && x.ok ? 'checked' : ''} style="accent-color:#08264A"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${U.capacity(x.v)}</div><div class="s">${x.ok ? `${tt('السائق', 'Driver')}: ${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? U.badge(tt('متاحة', 'Available'), 'success') : U.badge(tt('غير متاحة', 'Unavailable'), 'danger')}</label>`).join('');
       if (!document.querySelector('input[name="bk-veh"]:checked')) document.querySelector('input[name="bk-veh"]').checked = true;
     };
-    ['pax', 'date', 'time', 'pickup', 'destination', 'vehicleType'].forEach(i => g(i).addEventListener('change', upd)); upd();
+    ['pax', 'loadKg', 'date', 'time', 'pickup', 'destination', 'vehicleType'].forEach(i => g(i) && g(i).addEventListener('change', upd)); upd();
   });
   U.act('save-booking', () => {
     const d = U.readForm('bk');
-    const missing = ['clientId', 'date', 'time', 'pax', 'price'].filter(k => d[k] == null || d[k] === '');
+    const needPax = ((M.vehicleClasses[d.vehicleType] || {}).seats || 0) > 0;
+    const missing = ['clientId', 'date', 'time', needPax ? 'pax' : null, 'price'].filter(k => k && (d[k] == null || d[k] === ''));
     if (missing.length) { U.showError({ field: missing[0], msg: { ar: 'هذا الحقل مطلوب', en: 'This field is required' } }); return; }
     const sel = document.querySelector('input[name="bk-veh"]:checked');
     if (sel && sel.value) { d.vehicleId = sel.value; if (sel.dataset.d) d.driverId = sel.dataset.d; }
@@ -125,7 +129,7 @@
   U.act('convert-booking', el => {
     if (!U.guard()) return;
     const b = U.find('bookings', el.dataset.id); const c = U.candidates(b);
-    U.modal(tt('تحويل لرحلة', 'Convert to trip'), `<p class="muted small">${tt('المركبات مرتبة حسب الأنسب. المركبات المتعارضة أو في الصيانة أو بسعة أقل مقفولة. السيرفر يعيد التحقق عند الحفظ.', 'Vehicles are ranked by fit. Ones that clash, are in the workshop or are too small are blocked. The server re-checks on save.')}</p>${c.slice(0, 10).map(x => `<div class="list-row"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${x.v.seats} ${tt('مقعد', 'seats')}</div><div class="s">${x.ok ? `${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? `<button class="btn sm" data-act="do-assign" data-b="${b.id}" data-v="${x.v.id}" data-d="${x.driver.id}">${tt('تخصيص', 'Assign')}</button>` : U.badge(tt('غير متاحة', 'Blocked'), 'danger')}</div>`).join('') || U.empty('car', tt('لا توجد مركبات', 'No vehicles'))}`);
+    U.modal(tt('تحويل لرحلة', 'Convert to trip'), `<p class="muted small">${tt('المركبات مرتبة حسب الأنسب. المركبات المتعارضة أو في الصيانة أو بسعة أقل مقفولة. السيرفر يعيد التحقق عند الحفظ.', 'Vehicles are ranked by fit. Ones that clash, are in the workshop or are too small are blocked. The server re-checks on save.')}</p>${c.slice(0, 10).map(x => `<div class="list-row"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${U.capacity(x.v)}</div><div class="s">${x.ok ? `${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? `<button class="btn sm" data-act="do-assign" data-b="${b.id}" data-v="${x.v.id}" data-d="${x.driver.id}">${tt('تخصيص', 'Assign')}</button>` : U.badge(tt('غير متاحة', 'Blocked'), 'danger')}</div>`).join('') || U.empty('car', tt('لا توجد مركبات', 'No vehicles'))}`);
   });
   U.act('do-assign', el => U.run('booking.assign', { bookingId: el.dataset.b, vehicleId: el.dataset.v, driverId: el.dataset.d || undefined }, { ok: r => tt(`تم إنشاء الرحلة ${r.number}`, `Trip ${r.number} created`) }));
   U.act('cancel-booking', el => U.confirm(tt('إلغاء الحجز', 'Cancel booking'), tt('الحجز والرحلات المجدولة عليه هيتلغوا.', 'The booking and its scheduled trips will be cancelled.'), r => U.run('booking.cancel', { id: el.dataset.id, reason: r }, { ok: tt('تم إلغاء الحجز', 'Booking cancelled') }), { reason: true, danger: true, ok: tt('تأكيد الإلغاء', 'Confirm cancellation') }));
@@ -134,7 +138,7 @@
     U.formModal(tt('تعديل الحجز', 'Edit booking'), [
       assigned ? null : { f: 'date', label: tt('التاريخ', 'Date'), type: 'date', value: b.date },
       assigned ? null : { f: 'time', label: tt('ميعاد الاستلام', 'Pickup time'), type: 'time', value: b.time },
-      assigned ? null : { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', value: b.vehicleType, options: Object.keys(M.vehicleClasses).map(k => [k, U.vtype(k)]) },
+      assigned ? null : { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', value: b.vehicleType, options: [...new Set([b.vehicleType, ...M.usableTypes()])].map(k => [k, U.vtype(k)]) },
       { f: 'pax', label: tt('عدد الركاب', 'Passengers'), type: 'number', value: b.pax, attrs: 'min="1"' },
       { f: 'price', label: tt('السعر المتفق عليه', 'Agreed price'), type: 'number', value: b.price, attrs: 'min="0"' },
       { f: 'status', label: tt('الحالة', 'Status'), type: 'select', value: b.status, options: [['confirmed', U.statusText('confirmed')], ['tentative', U.statusText('tentative')]] },
@@ -437,7 +441,7 @@
       { f: 'clientId', label: tt('العميل', 'Client'), type: 'select', value: b ? b.clientId : '', options: db.clients.map(c => [c.id, M.L(c.name)]), req: true },
       { f: 'date', label: tt('التاريخ', 'Date'), type: 'date', value: b ? b.date : M.TODAY, req: true },
       { f: 'supplier', label: tt('المورد', 'Supplier'), req: true }, { f: 'plate', label: tt('لوحة مركبة المورد', 'Supplier vehicle plate'), req: true }, { f: 'driver', label: tt('سائق المورد', 'Supplier driver') },
-      { f: 'vehicleType', label: tt('النوع', 'Type'), type: 'select', value: b ? b.vehicleType : 'MC', options: Object.keys(M.vehicleClasses).map(k => [k, U.vtype(k)]) },
+      { f: 'vehicleType', label: tt('النوع', 'Type'), type: 'select', value: b ? b.vehicleType : M.usableTypes()[0], options: M.usableTypes().map(k => [k, U.vtype(k)]) },
       { f: 'from', label: tt('من', 'From'), type: 'select', value: b ? b.pickup : '', options: Object.keys(M.places).map(k => [k, U.place(k)]) },
       { f: 'to', label: tt('إلى', 'To'), type: 'select', value: b ? b.destination : '', options: Object.keys(M.places).map(k => [k, U.place(k)]) },
       { f: 'revenue', label: tt('الإيراد من العميل', 'Revenue from client'), type: 'number', value: b ? b.price : '', req: true, attrs: 'min="0"' },

@@ -12,13 +12,18 @@ async function seed(c) {
   const drv = [];
   for (const [n, e] of [['أحمد حسن', 'Ahmed Hassan'], ['محمود سعيد', 'Mahmoud Saeed'], ['خالد يوسف', 'Khaled Youssef'], ['علي إبراهيم', 'Ali Ibrahim']]) drv.push((await ok('driver.create', { name: { ar: n, en: e }, phone: '0100000000' + drv.length, licenseExpiry: '2030-06-01', salary: 4500, employment: 'both', commission: 120 })).id);
   const veh = [];
-  const types = [['LB', 'Mercedes', 'Tourismo', 6500000], ['MB', 'Toyota', 'Coaster', 2400000], ['MC', 'Hyundai', 'H1', 1100000], ['SD', 'Toyota', 'Corolla', 900000]];
+  // passenger fleet for passenger activities, trucks for a cargo-only company (its types follow its activities)
+  const usable = snap0.vehicleTypes.filter(t => t.usable !== false).map(t => t.code);
+  const cargoOnly = !usable.includes('MB');
+  const types = cargoOnly
+    ? [['TH', 'Mercedes', 'Actros', 4500000], ['TM', 'Mitsubishi', 'Canter', 2800000], ['TL', 'Isuzu', 'D-Max', 1300000], ['VN', 'Toyota', 'Hiace', 1500000]]
+    : [['LB', 'Mercedes', 'Tourismo', 6500000], ['MB', 'Toyota', 'Coaster', 2400000], ['MC', 'Hyundai', 'H1', 1100000], ['SD', 'Toyota', 'Corolla', 900000]];
   for (let k = 0; k < types.length; k++) veh.push((await ok('vehicle.create', { type: types[k][0], plate: { ar: `س ص ${1000 + k}`, en: `SS ${1000 + k}` }, make: types[k][1], model: types[k][2], purchaseDate: '2024-03-01', purchasePrice: types[k][3], odometer: 20000, driverId: drv[k], licenseExpiry: '2030-01-01', insuranceExpiry: '2030-01-01' })).id);
   const cls = [];
   for (const [n, e, t] of [['النيل للسياحة', 'Nile Tours', 'agency'], ['فندق الهرم', 'Pyramids Hotel', 'hotel'], ['شركة المستقبل', 'Future Co', 'company']]) cls.push((await ok('client.create', { name: { ar: n, en: e }, type: t, creditLimit: 800000, terms: 30, email: 'ap@x.test' })).id);
   const trips = [];
   for (let k = 0; k < 4; k++) {
-    const b = await ok('booking.create', { clientId: cls[k % 3], date: day(-3 + k), time: '09:00', pax: [40, 20, 8, 3][k], pickup: 'CAIAP', destination: 'CAI', vehicleType: types[k][0], price: 800 + k * 400, backdated: true });
+    const b = await ok('booking.create', { clientId: cls[k % 3], date: day(-3 + k), time: '09:00', pax: cargoOnly ? [undefined, undefined, undefined, 2][k] : [40, 20, 8, 3][k], loadKg: cargoOnly ? [12000, 5000, 1000, 600][k] : undefined, pickup: 'CAIAP', destination: 'CAI', vehicleType: types[k][0], price: 800 + k * 400, backdated: true });
     const t = await ok('booking.assign', { bookingId: b.id, vehicleId: veh[k] });
     trips.push({ id: t.id, client: cls[k % 3] });
   }
@@ -26,7 +31,7 @@ async function seed(c) {
   await ok('trip.start', { id: trips[1].id }); await ok('trip.complete', { id: trips[1].id, endKm: 20045 });
   const inv = await ok('invoice.fromTrips', { clientId: trips[0].client, tripIds: [trips[0].id] });
   await ok('payment.create', { clientId: trips[0].client, amount: 500, method: 'cash' });
-  await ok('booking.create', { clientId: cls[0], date: day(3), time: '10:00', pax: 20, pickup: 'CAI', destination: 'ALX', vehicleType: 'MB', price: 3500 });
+  await ok('booking.create', cargoOnly ? { clientId: cls[0], date: day(3), time: '10:00', loadKg: 4000, pickup: 'CAI', destination: 'ALX', vehicleType: 'TM', price: 3500 } : { clientId: cls[0], date: day(3), time: '10:00', pax: 20, pickup: 'CAI', destination: 'ALX', vehicleType: 'MB', price: 3500 });
   if (tourism) await ok('program.create', { name: { ar: 'برنامج القاهرة والإسكندرية', en: 'Cairo & Alexandria' }, clientId: cls[1], start: day(7), pax: 12, price: 24000, vehicleId: veh[2], driverId: drv[2], days: [{ from: 'CAIAP', to: 'CAI' }, { from: 'CAI', to: 'ALX' }, { from: 'ALX', to: 'CAI' }] });
   const sup = await ok('supplier.create', { name: { ar: 'مورد القطع', en: 'Parts Supplier' } });
   const item = await ok('item.create', { name: { ar: 'فلتر زيت', en: 'Oil filter' }, category: 'filters', unit: 'pc', cost: 120, minQty: 5 });
