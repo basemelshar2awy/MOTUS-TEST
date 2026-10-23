@@ -1,0 +1,10 @@
+
+::group::✅ Passing tests
+✅ numbers use Western digits and the company currency
+✅ dates and days
+✅ bilingual values from the server
+✅ server errors keep both languages
+✅ the screens catalog matches the dashboard menu
+::endgroup::
+
+🎉 5 tests passed.
