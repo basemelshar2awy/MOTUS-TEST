@@ -15,6 +15,9 @@
     const hours = route ? route.hours * (km / route.km) : Math.max(1, km / 70);
     const toMin = s => (+s.slice(0, 2)) * 60 + (+s.slice(3, 5));
     const bStart = toMin(b.time || '10:00'), bEnd = Math.min(1439, bStart + Math.round(hours * 60) + 15);
+    // local 'YYYY-MM-DD HH:MM' moments, comparable as text with the calendar entries
+    const shiftLocal = (ts, min) => new Date(Date.parse(ts.replace(' ', 'T') + ':00Z') + min * 60000).toISOString().slice(0, 16).replace('T', ' ');
+    const bStartTs = `${b.date} ${b.time || '10:00'}`, bEndTs = shiftLocal(bStartTs, Math.round(hours * 60) + 15);
     return db.vehicles.filter(v => v.status !== 'sold').map(v => {
       const reasons = [], warns = [];
       if (v.seats > 0 && v.seats < b.pax) reasons.push([`السعة ${v.seats} مقعد أقل من ${b.pax} راكب`, `Capacity ${v.seats} is below ${b.pax} passengers`]);
@@ -22,9 +25,13 @@
       if (b.loadKg && (v.payloadKg || 0) < b.loadKg) reasons.push([`الحمولة ${M.n0(v.payloadKg || 0)} كجم أقل من ${M.n0(b.loadKg)} كجم`, `Payload ${M.n0(v.payloadKg || 0)} kg is below ${M.n0(b.loadKg)} kg`]);
       if (v.status === 'maintenance') reasons.push(['المركبة في الصيانة', 'Vehicle is in the workshop']);
       if (v.status === 'stopped') reasons.push(['المركبة متوقفة', 'Vehicle is stopped']);
-      const same = db.trips.filter(t => t.vehicleId === v.id && t.date === b.date && t.status !== 'cancelled');
-      const clash = same.find(t => { const a = toMin(t.startTime); let e = toMin(t.endTime); if (e <= a) e = 24 * 60; return bStart < e + 30 && bEnd + 30 > a; });
-      if (clash) reasons.push([`متعارضة مع الرحلة ${clash.number} (${clash.startTime}–${clash.endTime})`, `Overlaps trip ${clash.number} (${clash.startTime}–${clash.endTime})`]);
+      // unified calendar (real local times, so a night trip from yesterday counts too); 30-minute gap
+      const cal = ((db.calendar || {}).vehicles || []).filter(k => k.vehicleId === v.id);
+      const hit = cal.find(k => k.from < shiftLocal(bEndTs, 30) && k.to > shiftLocal(bStartTs, -30));
+      if (hit) {
+        const tr = hit.sourceType === 'trip' ? db.trips.find(t => t.id === hit.sourceId) : null;
+        reasons.push(tr ? [`متعارضة مع الرحلة ${tr.number} (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`, `Overlaps trip ${tr.number} (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`] : [`المركبة محجوزة (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`, `Vehicle is booked (${hit.from.slice(5, 16)} → ${hit.to.slice(5, 16)})`]);
+      }
       if (v.licenseExpiry && v.licenseExpiry < b.date) reasons.push(['رخصة المركبة منتهية', 'Vehicle license expired']);
       if (v.insuranceExpiry && v.insuranceExpiry < b.date) reasons.push(['تأمين المركبة منتهي', 'Vehicle insurance expired']);
       const oil = C.oilStatus(cid, v); if (oil && oil.state === 'overdue') warns.push(['تغيير الزيت متأخر', 'Oil change overdue']);
@@ -219,7 +226,7 @@
     const tabs = [['info', tt('البيانات', 'Details')], ['order', tt('أمر التشغيل', 'Trip order')], ['manifest', tt('كشف الركاب', 'Passenger manifest')], ['notify', tt('الإشعارات', 'Notifications')]];
     let body = '';
     if (tripTab === 'info') {
-      body = `<div class="cols-2">` + U.card(tt('بيانات الرحلة', 'Trip details'), U.dl([[tt('النوع', 'Type'), tripTypeTxt(t.type)], [tt('المسار', 'Route'), U.routeTxt(t.from, t.to)], [tt('التاريخ', 'Date'), M.date(t.date)], [tt('الوقت', 'Time'), `<span class="num">${t.startTime} – ${t.endTime}</span>`], [tt('المركبة', 'Vehicle'), U.vLabel(v)], [tt('السائق', 'Driver'), U.dLabel(d)], [tt('الركاب', 'Passengers'), t.pax], [tt('عداد البداية', 'Start km'), M.n0(t.startKm)], [tt('عداد النهاية', 'End km'), M.n0(t.endKm)], [tt('المسافة', 'Distance'), t.km ? `${M.n0(t.km)} ${tt('كم', 'km')} ${t.gpsKm ? `<span class="muted small">(GPS ${M.n0(t.gpsKm)})</span>` : ''}` : `${M.n0(t.plannedKm)} ${tt('كم مخطط', 'km planned')}`], M.has('tourism') && [tt('الطيران', 'Flight'), t.flight ? `${M.esc(t.flight)} ${t.flightStatus ? U.badge({ ontime: tt('في الموعد', 'On time'), delayed: tt('متأخر', 'Delayed'), landed: tt('هبطت', 'Landed'), cancelled: tt('ملغاة', 'Cancelled') }[t.flightStatus], t.flightStatus === 'delayed' || t.flightStatus === 'cancelled' ? 'warning' : 'success') : ''}` : '—'], [tt('الالتزام بالموعد', 'On time'), t.onTime == null ? '—' : t.onTime ? U.badge(tt('في الموعد', 'On time'), 'success') : U.badge(tt(`تأخير ${t.delayMin} دقيقة`, `${t.delayMin} min late`), 'warning')], t.cancelReason ? [tt('سبب الإلغاء', 'Cancellation reason'), M.esc(tt(t.cancelReason[0], t.cancelReason[1]))] : null])) +
+      body = `<div class="cols-2">` + U.card(tt('بيانات الرحلة', 'Trip details'), U.dl([[tt('النوع', 'Type'), tripTypeTxt(t.type)], [tt('المسار', 'Route'), U.routeTxt(t.from, t.to)], [tt('التاريخ', 'Date'), M.date(t.date)], [tt('الوقت', 'Time'), `<span class="num">${t.startTime} – ${t.endTime}</span>${t.endsAt && t.endsAt.slice(0, 10) !== t.date ? ' ' + U.badge(tt('بتنتهي ', 'Ends ') + M.date(t.endsAt.slice(0, 10)), 'warning') : ''}`], [tt('المركبة', 'Vehicle'), U.vLabel(v)], [tt('السائق', 'Driver'), U.dLabel(d)], [tt('الركاب', 'Passengers'), t.pax], [tt('عداد البداية', 'Start km'), M.n0(t.startKm)], [tt('عداد النهاية', 'End km'), M.n0(t.endKm)], [tt('المسافة', 'Distance'), t.km ? `${M.n0(t.km)} ${tt('كم', 'km')} ${t.gpsKm ? `<span class="muted small">(GPS ${M.n0(t.gpsKm)})</span>` : ''}` : `${M.n0(t.plannedKm)} ${tt('كم مخطط', 'km planned')}`], M.has('tourism') && [tt('الطيران', 'Flight'), t.flight ? `${M.esc(t.flight)} ${t.flightStatus ? U.badge({ ontime: tt('في الموعد', 'On time'), delayed: tt('متأخر', 'Delayed'), landed: tt('هبطت', 'Landed'), cancelled: tt('ملغاة', 'Cancelled') }[t.flightStatus], t.flightStatus === 'delayed' || t.flightStatus === 'cancelled' ? 'warning' : 'success') : ''}` : '—'], [tt('الالتزام بالموعد', 'On time'), t.onTime == null ? '—' : t.onTime ? U.badge(tt('في الموعد', 'On time'), 'success') : U.badge(tt(`تأخير ${t.delayMin} دقيقة`, `${t.delayMin} min late`), 'warning')], t.cancelReason ? [tt('سبب الإلغاء', 'Cancellation reason'), M.esc(tt(t.cancelReason[0], t.cancelReason[1]))] : null])) +
         U.card(tt('الإيراد والتكلفة', 'Revenue & cost'), U.dl([[tt('الإيراد', 'Revenue'), `<b>${M.money(t.revenue)}</b>`], [tt('كارتة', 'Tolls'), M.money(t.expenses.tolls)], [tt('جراج وانتظار', 'Parking'), M.money(t.expenses.parking)], [tt('إقامة سائق', 'Driver lodging'), M.money(t.expenses.lodging)], [tt('مصروفات أخرى', 'Other'), M.money(t.expenses.other)], [tt('وقود (تقديري)', 'Fuel (est.)'), M.money(cost.fuel)], [tt('صيانة وزيت (تقديري)', 'Maintenance & oil (est.)'), M.money(cost.maint)], [tt('حصة التكاليف الثابتة', 'Fixed cost share'), M.money(cost.fixed)], [tt('ربح الرحلة', 'Trip profit'), U.money(t.revenue - cost.total)]]) + `<div class="muted small" style="margin-top:8px">${tt('الوقود والصيانة محسوبين بتكلفة الكيلو الفعلية للمركبة. الثابت = (سائق + رخص وتأمين + إهلاك) ÷ أيام التشغيل.', 'Fuel and maintenance use the vehicle’s actual cost per km. Fixed = (driver + license & insurance + depreciation) ÷ operating days.')}</div>`) + `</div>`;
     } else if (tripTab === 'order') {
       body = tripOrder(t, v, d, cl, prog);

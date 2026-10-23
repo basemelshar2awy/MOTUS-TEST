@@ -23,6 +23,9 @@ function fromPg(e) {
     case '23502': return bad('required', 'حقل مطلوب ناقص', 'A required field is missing' + (e.column ? ` (${e.column})` : ''));
     case '22P02': case '22007': case '22008': case '22003': return bad('format', 'صيغة قيمة غير صحيحة', 'A value has an invalid format');
     case 'P0001': return bad('rule', e.message.includes('period') ? 'الفترة المحاسبية مقفلة ولا يمكن التسجيل فيها' : e.message, e.message);
+    case '23P01': return e.constraint && e.constraint.startsWith('driver_')
+      ? conflict('driver_busy', 'السائق مشغول في الفترة دي (متسجّل له رحلة أو إجازة في نفس الوقت)', 'The driver is already booked for this period (a trip or leave at the same time)')
+      : conflict('vehicle_busy', 'المركبة مشغولة في الفترة دي (متسجّل لها التزام تاني في نفس الوقت)', 'The vehicle is already booked for this period (another commitment at the same time)');
     case '40001': case '40P01': return conflict('retry', 'تعارض مع عملية أخرى، حاول مرة ثانية', 'Conflicted with another operation, please try again');
     case '42501': return new AppError(403, 'rls', 'لا يمكن الوصول لهذه البيانات', 'Access to this data is not allowed');
     default: return e;

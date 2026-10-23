@@ -7,6 +7,7 @@ Base: `https://motus.sabeelbus.com/api/v1/` — `Authorization: Bearer mk_live_�
 - `Idempotency-Key` header on POST: a repeat returns the first result (`replayed`).
 - `GET /journal?from&to&status&format=csv`, `POST /journal/ack` — accounting export and acknowledgement.
 - `POST /tracking/positions`, `GET /tracking/positions|events` — GPS ingest.
+- `GET /calendar?from&to&vehicleId` (dates) — what occupies each vehicle; `GET /availability?from&to&vehicleType` (ISO date-times) — vehicles free for the whole period incl. the 30-minute gap. Scope `vehicles:read`.
 - `GET /reports/summary|trial-balance`.
 - Activities: resources of an activity the company does not have (today: `programs` → `tourism`) answer `403 activity_disabled`, reads included; API keys cannot be given their scopes (`400 scope_activity`). Input fields of disabled activities on shared resources (e.g. `flight` on bookings and trips) are ignored.
 - Errors: `{ "error": { "code", "message": {"ar","en"}, "field" } }`; rate limit 429.

@@ -170,6 +170,27 @@ async function handle(req, res, url, ip) {
         const from = q.get('from') || core.addDays(core.today(), -7);
         out = { data: await db.read(k.companyId, async c => (await c.query('SELECT * FROM events WHERE date >= $1 ORDER BY date DESC, time DESC LIMIT 1000', [from])).rows.map(r => shape(r))) };
       } else throw new AppError(404, 'not_found', 'المسار غير موجود', 'Unknown endpoint');
+    } else if (name === 'calendar' && method === 'GET') {
+      // what occupies each vehicle (trips today; contracts and holds in later steps)
+      need(k, 'vehicles', 'read');
+      const from = q.get('from') || core.today(), to = q.get('to') || core.addDays(from, 7);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) throw bad('range', 'الفترة غير صحيحة', 'from/to must be dates (YYYY-MM-DD) and to >= from', 'from');
+      const vid = q.get('vehicleId');
+      if (vid && !db.UUID.test(vid)) throw bad('vehicleId', 'مركبة غير صحيحة', 'Invalid vehicleId', 'vehicleId');
+      out = { data: await db.read(k.companyId, async c => (await c.query(`SELECT k.vehicle_id, v.code, k.kind, k.source_type, k.source_id, k.note, lower(k.during) starts_at, upper(k.during) ends_at
+          FROM vehicle_commitments k JOIN vehicles v ON v.id = k.vehicle_id
+         WHERE k.during && tstzrange(local_moment(app_company_id(), $1::date, '00:00'), local_moment(app_company_id(), $2::date + 1, '00:00'), '[)') AND ($3::uuid IS NULL OR k.vehicle_id = $3)
+         ORDER BY lower(k.during)`, [from, to, vid || null])).rows.map(r => ({ vehicleId: r.vehicle_id, vehicle: r.code, kind: r.kind, sourceType: r.source_type, sourceId: r.source_id, note: r.note, startsAt: r.starts_at.toISOString(), endsAt: r.ends_at.toISOString() }))) };
+    } else if (name === 'availability' && method === 'GET') {
+      // vehicles free for a whole period (with the 30-minute gap), optionally of one type
+      need(k, 'vehicles', 'read');
+      const from = q.get('from'), to = q.get('to');
+      if (!from || !to || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to)) || Date.parse(to) <= Date.parse(from)) throw bad('range', 'الفترة غير صحيحة', 'from and to are required ISO date-times and to must be after from', 'from');
+      const type = q.get('vehicleType');
+      out = { data: await db.read(k.companyId, async c => (await c.query(`SELECT v.id, v.code, v.type, v.seats, v.payload_kg FROM vehicles v JOIN vehicle_types t ON t.code = v.type
+         WHERE v.status = 'active' AND t.active AND ($3::text IS NULL OR v.type = $3)
+           AND NOT EXISTS (SELECT 1 FROM vehicle_commitments k WHERE k.vehicle_id = v.id AND k.during && tstzrange($1::timestamptz - interval '30 minutes', $2::timestamptz + interval '30 minutes', '[)'))
+         ORDER BY v.code`, [from, to, type || null])).rows.map(r => ({ vehicleId: r.id, code: r.code, vehicleType: r.type, seats: r.seats, payloadKg: Number(r.payload_kg) }))) };
     } else if (name === 'reports') {
       need(k, 'reports', 'read');
       if (!REPORTS[a]) throw new AppError(404, 'not_found', 'تقرير غير موجود', 'Unknown report. Available: ' + Object.keys(REPORTS).join(', '));

@@ -10,3 +10,6 @@ Creating the first administrator: `2-Setup-Database.ps1` (or `node server/tools/
 
 ## Vehicle types (migration 004)
 `vehicle_categories` — platform catalog (code, names, kind passenger/cargo/mixed, activities it serves); read-only for the app role. `vehicle_types` — per company: own code (`^[A-Z0-9]{2,8}$`), `category`, `seats` (0 allowed), `payload_kg`, `volume_m3`, `active`; a type needs seats or payload. `vehicles.type`, `bookings.vehicle_type`, `program_days.vehicle_type`, `subcontracts.vehicle_type` reference `(company_id, code)` of `vehicle_types`. `vehicles` and `bookings` gain `payload_kg` / `volume_m3` and `load_kg`. Starting types per category live in `server/lib/defaults.js` and are added when a company gets an activity.
+
+## Calendar (migration 005)
+`companies.timezone` (Africa/Cairo by default). `trips.starts_at` / `ends_at` are set by the `trips_times` trigger from the local `date` + `start_time` and `duration_min` (or `end_time`, next day when earlier than the start). `vehicle_commitments` / `driver_commitments` hold a `tstzrange` per commitment (kind, source) with an exclusion constraint (`btree_gist`) so two periods of the same vehicle or driver can never overlap; triggers on `trips` (scheduled/running) and `availability` (leave) keep them in step. Error 23P01 is shown as "vehicle/driver already booked for this period".
