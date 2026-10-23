@@ -168,7 +168,7 @@ class InvoiceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: account,
+              key: ValueKey('acc-$method'), initialValue: account,
               isExpanded: true,
               decoration: InputDecoration(labelText: s.tt('الحساب', 'Account')),
               items: [

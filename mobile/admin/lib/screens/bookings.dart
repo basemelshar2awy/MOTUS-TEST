@@ -358,7 +358,7 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
       body: ListView(padding: const EdgeInsets.all(16), children: [
         if (s.multi) ...[
           DropdownButtonFormField<String>(
-            value: _act,
+            key: ValueKey('act'), initialValue: _act,
             decoration: InputDecoration(labelText: s.tt('النشاط', 'Activity')),
             items: [for (final a in s.activities) item(a, s.actName(a))],
             onChanged: (v) => setState(() {
@@ -368,10 +368,10 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           ),
           _gap(),
         ],
-        DropdownButtonFormField<String>(value: _client, isExpanded: true, decoration: InputDecoration(labelText: s.tt('العميل', 'Client')), items: [for (final c in clients) item(str(c['id']), s.l(c['name']))], onChanged: (v) => setState(() => _client = v)),
+        DropdownButtonFormField<String>(key: ValueKey('client-$_act'), initialValue: _client, isExpanded: true, decoration: InputDecoration(labelText: s.tt('العميل', 'Client')), items: [for (final c in clients) item(str(c['id']), s.l(c['name']))], onChanged: (v) => setState(() => _client = v)),
         _gap(),
         DropdownButtonFormField<String>(
-          value: _type,
+          key: ValueKey('type-$_act'), initialValue: _type,
           isExpanded: true,
           decoration: InputDecoration(labelText: s.tt('نوع الرحلة', 'Trip type')),
           items: [if (_act == 'tourism') DropdownMenuItem<String>(value: null, child: Text(s.tt('حسب المسار', 'From the route'))), for (final e in tripTypes.entries) item(e.key, s.l(e.value))],
@@ -422,11 +422,11 @@ class _BookingFormScreenState extends State<BookingFormScreen> {
           TextField(controller: _flight, textDirection: TextDirection.ltr, decoration: InputDecoration(labelText: s.tt('رقم الطيران (اختياري)', 'Flight number (optional)'), hintText: 'MS985')),
           _gap(),
         ],
-        DropdownButtonFormField<String>(value: _pickup, isExpanded: true, decoration: InputDecoration(labelText: _cargo ? s.tt('مكان التحميل', 'Loading point') : s.tt('مكان الاستلام', 'Pickup')), items: [for (final c in places) item(c, s.place(c))], onChanged: (v) => setState(() => _pickup = v)),
+        DropdownButtonFormField<String>(key: ValueKey('pickup-$_act'), initialValue: _pickup, isExpanded: true, decoration: InputDecoration(labelText: _cargo ? s.tt('مكان التحميل', 'Loading point') : s.tt('مكان الاستلام', 'Pickup')), items: [for (final c in places) item(c, s.place(c))], onChanged: (v) => setState(() => _pickup = v)),
         _gap(),
-        DropdownButtonFormField<String>(value: _dest, isExpanded: true, decoration: InputDecoration(labelText: _cargo ? s.tt('مكان التسليم', 'Delivery point') : s.tt('الوجهة', 'Destination')), items: [for (final c in places) item(c, s.place(c))], onChanged: (v) => setState(() => _dest = v)),
+        DropdownButtonFormField<String>(key: ValueKey('dest-$_act'), initialValue: _dest, isExpanded: true, decoration: InputDecoration(labelText: _cargo ? s.tt('مكان التسليم', 'Delivery point') : s.tt('الوجهة', 'Destination')), items: [for (final c in places) item(c, s.place(c))], onChanged: (v) => setState(() => _dest = v)),
         _gap(),
-        DropdownButtonFormField<String>(value: _vtype, isExpanded: true, decoration: InputDecoration(labelText: s.tt('نوع المركبة', 'Vehicle type')), items: [for (final t in types) item(t, s.vtype(t))], onChanged: (v) => setState(() => _vtype = v)),
+        DropdownButtonFormField<String>(key: ValueKey('vtype-$_act'), initialValue: _vtype, isExpanded: true, decoration: InputDecoration(labelText: s.tt('نوع المركبة', 'Vehicle type')), items: [for (final t in types) item(t, s.vtype(t))], onChanged: (v) => setState(() => _vtype = v)),
         _gap(),
         TextField(controller: _price, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: s.tt('السعر المتفق عليه', 'Agreed price'))),
         _gap(),
