@@ -16,6 +16,7 @@ const registry = require('../services/registry');
 const providers = require('../services/providers');
 const tracking = require('../services/tracking');
 const session = require('./session');
+const webcalc = require('../lib/webcalc');
 const { Router, json, readBody, cookies, send } = require('../lib/http');
 const { AppError, bad, notFound, forbidden } = require('../lib/errors');
 
@@ -26,7 +27,9 @@ const init = cfg => { CFG = cfg; };
 /* ---------- helpers ---------- */
 async function currentUser(req) {
   if (req._user !== undefined) return req._user;
-  const u = await session.lookup(cookies(req)[session.COOKIE]);
+  // the apps send their session token as a Bearer header; the browser sends its cookie
+  const m = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization || ''));
+  const u = m ? await session.lookup(m[1], ['mobile']) : await session.lookup(cookies(req)[session.COOKIE]);
   req._user = u; return u;
 }
 async function requireUser(req, { allowMustChange = false } = {}) {
@@ -82,16 +85,59 @@ router.add('POST', '/api/login', async (req, res) => send(res, 200, await sessio
 router.add('POST', '/api/logout', async (req, res) => { await session.logout(res, await currentUser(req)); send(res, 200, { ok: true }); });
 router.add('POST', '/api/password', async (req, res) => {
   const u = await requireUser(req, { allowMustChange: true });
-  await session.changePassword(u, await json(req, 10 * 1024), res);
-  send(res, 200, { ok: true });
+  const out = await session.changePassword(u, await json(req, 10 * 1024), res);
+  send(res, 200, Object.assign({ ok: true }, out));
 });
-router.add('POST', '/api/session/company', async (req, res) => { const u = await requireUser(req); const b = await json(req, 4096); await session.switchCompany(u, b.companyId); send(res, 200, { ok: true }); });
+router.add('POST', '/api/session/company', async (req, res) => { const u = await requireUser(req); const b = await json(req, 4096); await session.switchCompany(u, b.companyId); await session.syncEmbeds(u); send(res, 200, { ok: true }); });
 router.add('POST', '/api/session/invites/:companyId/:answer', async (req, res, p) => {
   const u = await requireUser(req);
   if (!['accept', 'decline'].includes(p.answer)) throw notFound('route');
   send(res, 200, await session.answerInvite(u, p.companyId, p.answer === 'accept'));
 });
 router.add('POST', '/api/session/lang', async (req, res) => { const u = await requireUser(req); await session.setLang(u, (await json(req, 1024)).lang); send(res, 200, { ok: true }); });
+
+/* ---------- mobile apps ---------- */
+const PLATFORMS = ['android', 'ios', 'huawei'];
+const requireApp = async req => { const u = await requireUser(req); if (u.kind !== 'mobile') throw new AppError(403, 'forbidden', 'للتطبيق بس', 'For the app only'); return u; };
+// a web screen opened inside the app (one-time link, see session.mobileLink)
+router.add('POST', '/api/mobile/link', async (req, res) => { const u = await requireApp(req); send(res, 200, await session.mobileLink(u, (await json(req, 4096)).route)); });
+// this device's push token (Firebase on Android/iPhone, Huawei Push Kit on Huawei phones)
+router.add('POST', '/api/mobile/devices', async (req, res) => {
+  const u = await requireApp(req); const b = await json(req, 16 * 1024);
+  const platform = String(b.platform || ''), token = String(b.pushToken || '');
+  if (!PLATFORMS.includes(platform)) throw bad('platform', 'نوع الجهاز غير معروف', 'Unknown platform', 'platform');
+  if (token.length < 20 || token.length > 4096) throw bad('pushToken', 'رمز الإشعارات غير صحيح', 'Invalid push token', 'pushToken');
+  const app = b.app === 'driver' ? 'driver' : 'admin', lang = b.lang === 'en' ? 'en' : 'ar';
+  const str = (v, n) => String(v || '').slice(0, n);
+  const r = await db.platform(c => c.query(`INSERT INTO mobile_devices (user_id, session_id, app, platform, push_token, app_version, model, lang) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    ON CONFLICT (push_token) DO UPDATE SET user_id = EXCLUDED.user_id, session_id = EXCLUDED.session_id, app = EXCLUDED.app, platform = EXCLUDED.platform, app_version = EXCLUDED.app_version, model = EXCLUDED.model, lang = EXCLUDED.lang, last_seen_at = now()
+    RETURNING id`, [u.id, u.sessionId, app, platform, token, str(b.appVersion, 40), str(b.model, 80), lang]));
+  send(res, 200, { id: r.rows[0].id });
+});
+router.add('DELETE', '/api/mobile/devices', async (req, res) => {
+  const u = await requireApp(req);
+  await db.platform(c => c.query('DELETE FROM mobile_devices WHERE session_id = $1', [u.sessionId]));
+  send(res, 200, { ok: true });
+});
+// the home screen: the dashboard's figures from the dashboard's own calc code (lib/webcalc)
+router.add('GET', '/api/mobile/home', async (req, res, p, url) => {
+  const u = await requireUser(req); const cid = requireCompany(u);
+  const snap = snapshot.forRole(await snapshot.get(cid), u.role, u.id, u.driverId);
+  const period = url.searchParams.get('period') === 'last' ? 'last' : 'mtd';
+  send(res, 200, webcalc.home(snap, { key: `${cid}|${u.role}|${u.id}`, lang: u.lang === 'en' ? 'en' : 'ar', period }));
+});
+router.add('GET', '/api/mobile/alerts', async (req, res) => {
+  const u = await requireUser(req); const cid = requireCompany(u);
+  const snap = snapshot.forRole(await snapshot.get(cid), u.role, u.id, u.driverId);
+  send(res, 200, { alerts: webcalc.alerts(snap, { key: `${cid}|${u.role}|${u.id}`, lang: u.lang === 'en' ? 'en' : 'ar' }) });
+});
+/* the one-time link: becomes a short browser session inside the app, then shows the screen with
+   the dashboard's menus hidden (the app has its own) */
+async function openMobile(req, res, url) {
+  const route = await session.openLink(res, url.searchParams.get('code'));
+  if (!route) return send(res, 410, 'This link has expired. Go back and open the screen again. / انتهت صلاحية الرابط، ارجع وافتح الشاشة تاني.');
+  res.writeHead(302, { Location: `/?embed=1#${route}`, 'Cache-Control': 'no-store' }); res.end();
+}
 
 /* ---------- data ---------- */
 router.add('GET', '/api/snapshot', async (req, res) => {
@@ -205,4 +251,4 @@ router.add('POST', '/api/webhooks/providers/:id', async (req, res, p) => {
   send(res, 200, out);
 });
 
-module.exports = { router, init, currentUser, checkOrigin };
+module.exports = { router, init, currentUser, checkOrigin, openMobile };

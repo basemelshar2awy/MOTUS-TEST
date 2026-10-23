@@ -15,6 +15,7 @@ const core = require('./lib/core');
 const secrets = require('./lib/secrets');
 const snapshot = require('./lib/snapshot');
 const webhooks = require('./lib/webhooks');
+const push = require('./lib/push');
 const registry = require('./services/registry');
 ['fleet', 'ops', 'finance', 'contracts', 'lines', 'inventory', 'tracking', 'providers', 'admin'].forEach(m => require('./services/' + m));
 const session = require('./api/session');
@@ -96,6 +97,7 @@ async function handle(req, res) {
       return;
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
+    if (p === '/m/open') return routes.openMobile(req, res, url);   // a web screen opened inside the app
     let file = STATIC.get(p === '/' ? '/index.html' : p);
     if (!file) file = /\.[a-z0-9]+$/i.test(p) ? null : STATIC.get('/index.html');   // SPA fallback only for non-file paths
     if (!file) return send(res, 404, 'Not found');
@@ -128,13 +130,14 @@ async function main() {
     throw new Error(e.code === 'EADDRINUSE' ? `port ${cfg.port} on ${cfg.host} is already in use (is another copy of MOTUS running?)` : e.message);
   });
   if (cfg.webhookWorker) webhooks.start({ allowPrivate: cfg.allowPrivateWebhooks });
+  if (cfg.webhookWorker) push.start(cfg.push, { allowPrivate: cfg.allowPrivateWebhooks });
   log.info('MOTUS started', { version: pkg.version, listen: `${cfg.host}:${cfg.port}`, origin: cfg.publicOrigin, db: `${cfg.db.host}:${cfg.db.port}/${cfg.db.database}`, node: process.version });
 
   let stopping = false;
   const stop = async sig => {
     if (stopping) return; stopping = true;
     log.info('shutting down', { signal: sig });
-    webhooks.stop();
+    webhooks.stop(); push.stop();
     const force = setTimeout(() => process.exit(0), 10000); force.unref();
     server.close(async () => { try { await db.close(); } catch (e) { /* ignore */ } await log.close(); process.exit(0); });
   };

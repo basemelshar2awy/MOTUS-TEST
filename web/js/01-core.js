@@ -21,6 +21,9 @@ M.maxDate = (a, b) => (a > b ? a : b);
 
 /* ---------- language ---------- */
 M.lang = 'ar';
+/* a screen opened inside the MOTUS app (/?embed=1): the app shows its own menus, so the web ones hide */
+M.embed = (() => { try { return /[?&]embed=1(&|$)/.test(location.search); } catch (e) { return false; } })();
+try { if (M.embed) document.documentElement.classList.add('embed'); } catch (e) { }
 try { const l = localStorage.getItem('motus.lang'); if (l === 'en' || l === 'ar') M.lang = l; } catch (e) { }
 
 M.dict = {};

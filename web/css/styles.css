@@ -381,3 +381,6 @@ pre.code { display: block; padding: 12px; overflow: auto; white-space: pre; max-
 /* contracts: vehicle picker */
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px 12px; max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--motus-border); border-radius: 8px; }
 .check-row { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+/* inside the MOTUS app: the app has its own navigation */
+html.embed .sidebar, html.embed .topbar, html.embed .scrim { display: none !important; }
+html.embed .main { margin-inline-start: 0 !important; }
