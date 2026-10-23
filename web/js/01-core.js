@@ -5,6 +5,8 @@ var M = (typeof window !== 'undefined' ? window : globalThis).M = {};
 
 /* ---------- dates (ISO yyyy-mm-dd strings, UTC math) ---------- */
 M.TODAY = new Date().toISOString().slice(0, 10);   // replaced by the server's company-time-zone date at login
+/* now as 'YYYY-MM-DD HH:MM' in the company's time zone (same format as the server's timestamps) */
+M.nowLocal = () => { try { const z = M.TZ; return new Intl.DateTimeFormat('en-CA', { timeZone: z || undefined, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()).replace(',', '').replace(' 24:', ' 00:'); } catch (e) { return M.TODAY + ' 00:00'; } };
 M.START = M.TODAY;                                   // first day with data (company go-live)
 M.d = s => new Date(s + 'T00:00:00Z');
 M.iso = dt => dt.toISOString().slice(0, 10);
@@ -77,17 +79,35 @@ M.companies = [];
 /* company activities (tourism, education, intercity, staff, cargo): the server decides; the UI only hides */
 M.activities = [];
 M.activityCatalog = [];
-M.has = code => !code || M.activities.includes(code);
+M.has = code => !code || (Array.isArray(code) ? code.some(c => M.activities.includes(c)) : M.activities.includes(code));
 /* vehicle types a company can use for NEW vehicles and bookings (active + a category of its activities) */
 M.vehicleCategories = [];
 M.usableTypes = () => Object.keys(M.vehicleClasses).filter(k => M.vehicleClasses[k].usable !== false);
 M.cargoTypes = () => M.usableTypes().filter(k => (M.vehicleClasses[k].payloadKg || 0) > 0);
 M.vehicleClasses = {}; M.places = {}; M.routes = {}; M.fuelPrice = { diesel: 0, gasoline: 0 };
+/* activity profiles (server/lib/profiles.js): each activity's units, trip types, load, places, client types */
+M.profiles = { byActivity: {}, placeKinds: {}, clientTypes: {}, cargoFlags: {}, commonPlaceKinds: [], tripTypeNames: {} };
+M.acts = () => Object.keys(M.profiles.byActivity);
+M.prof = a => M.profiles.byActivity[a] || null;
+M.single = () => { const a = M.acts(); return a.length === 1 ? a[0] : null; };
+M.multi = () => M.acts().length > 1;
+M.actName = a => (M.activityCatalog.find(x => x.code === a) || { name: { ar: a, en: a } }).name;
+M.typeName = t => M.profiles.tripTypeNames[t] || (M.tripTypes && M.tripTypes[t]) || { ar: t, en: t };
+/* what a booking or trip carries, in its activity's words: "25 طالب", "5,000 كجم" */
+M.loadText = (x, act) => { const p = M.prof(act || x.activity); if ((act || x.activity) === 'cargo') return x.loadKg ? `${M.n0(x.loadKg)} ${M.tt('كجم', 'kg')}` : '—'; return `${x.pax || 0} ${p ? M.L(p.load.short) : M.tt('راكب', 'pax')}`; };
+/* the places an activity uses (its kinds + garages, clients, restricted areas) */
+M.placesFor = act => { const p = M.prof(act); const kinds = new Set([...(p ? p.placeKinds : Object.keys(M.profiles.placeKinds)), ...M.profiles.commonPlaceKinds]); return Object.keys(M.places).filter(k => kinds.has(M.places[k].kind)); };
+/* vehicle types usable for an activity (its categories) */
+M.typesFor = act => M.usableTypes().filter(k => { const cat = M.vehicleCategories.find(c => c.code === (M.vehicleClasses[k] || {}).category); return !act || !cat || (cat.activities || []).includes(act); });
+/* client types of the company's activities */
+M.clientTypesFor = act => [...new Set((act ? [act] : M.acts()).flatMap(a => (M.prof(a) || { clientTypes: [] }).clientTypes))];
 M.applySnapshot = snap => {
   const D = snap.data, cid = snap.company.id;
   M.TODAY = snap.today;
+  M.TZ = snap.company.timezone || null;
   M.activities = snap.activities || [];
   M.activityCatalog = snap.activityCatalog || [];
+  M.profiles = Object.assign({ byActivity: {}, placeKinds: {}, clientTypes: {}, cargoFlags: {}, commonPlaceKinds: [], tripTypeNames: {} }, snap.profiles || {});
   M.currency = snap.company.currency || 'EGP';
   M.pack = snap.company.countryPack || null;
   M.db = {}; M.db[cid] = D;

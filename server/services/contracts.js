@@ -85,6 +85,10 @@ define('contract.create', MANAGE, async (ctx, i, c) => {
   const client = await core.mustExist(c, 'clients', V.uuid(i, 'clientId', { req: true }), 'client');
   const f = fields(i, true);
   if (f.end_date && f.end_date < f.start_date) throw bad('endDate', 'نهاية العقد قبل بدايته', 'The contract ends before it starts', 'endDate');
+  // the activity the contract serves (the company's only one, or chosen)
+  const acts = await require('../lib/activities').enabled(c, ctx);
+  f.activity = V.oneOf(i, 'activity', acts, { def: acts.length === 1 ? acts[0] : null });
+  if (!f.activity) throw bad('activity', 'اختار النشاط اللي العقد بيخدمه', 'Choose the activity the contract serves', 'activity');
   const number = await core.nextNumber(c, ctx, 'CT', f.start_date);
   const k = await insert(c, 'contracts', Object.assign({ company_id: ctx.companyId, number, client_id: client.id, created_by: ctx.user.name || '' }, f, {
     terms_ar: f.terms_ar || 'المشغّل (الشركة) يتحمل الصيانة والوقود والزيوت.', terms_en: f.terms_en || 'The operator (the company) bears maintenance, fuel and oils.',
@@ -157,7 +161,7 @@ define('contract.trip', CONFIRM, async (ctx, i, c) => {
   const revenue = k.pricing === 'per_trip' ? Number(k.rate) : 0;   // per-period contracts are billed by the period
   const startKm = km != null ? v.odometer : null, endKm = km != null ? v.odometer + km : null;
   const t = await insert(c, 'trips', {
-    company_id: ctx.companyId, number, client_id: k.client_id, vehicle_id: vehicleId, driver_id: k.with_driver ? cv.driver_id : null, date, type: 'contract',
+    company_id: ctx.companyId, number, activity: k.activity, client_id: k.client_id, vehicle_id: vehicleId, driver_id: k.with_driver ? cv.driver_id : null, date, type: 'contract',
     from_place: V.str(i, 'from', { max: 120, def: '' }), to_place: V.str(i, 'to', { max: 120, def: '' }), start_time: start, end_time: end,
     start_km: startKm, end_km: endKm, km: km || 0, revenue, pax, status: 'completed', started_at: new Date(), completed_at: new Date(),
     source, contract_id: k.id, external_ref: ref, created_by: ctx.user.name || '',
@@ -242,11 +246,11 @@ define('contract.bill', ['company_admin', 'fleet_manager', 'accountant'], async 
 
 /* used by booking checks: is the vehicle (or driver) reserved by an exclusive contract at that time?
    start/end are minutes from midnight of `date` (end may pass midnight). */
-async function exclusiveClash(c, col, id, date, start, end) {
-  const rows = (await c.query(`SELECT k.number, k.name_ar, k.name_en, k.work_days, k.work_start, k.work_end, cv.from_date, cv.to_date, k.start_date, k.end_date
+async function exclusiveClash(c, col, id, date, start, end, ownContract) {
+  const rows = (await c.query(`SELECT k.id, k.number, k.name_ar, k.name_en, k.work_days, k.work_start, k.work_end, cv.from_date, cv.to_date, k.start_date, k.end_date
       FROM contract_vehicles cv JOIN contracts k ON k.id = cv.contract_id
      WHERE cv.${col} = $1 AND k.exclusive AND k.status = 'active' AND (${col === 'driver_id' ? 'k.with_driver' : 'true'})
-       AND cv.from_date <= $2::date + 1 AND (cv.to_date IS NULL OR cv.to_date >= $2::date - 1)`, [id, date])).rows;
+       AND cv.from_date <= $2::date + 1 AND (cv.to_date IS NULL OR cv.to_date >= $2::date - 1) AND ($3::uuid IS NULL OR k.id <> $3)`, [id, date, ownContract || null])).rows;
   for (const k of rows) {
     for (let d = -1; d <= Math.floor(end / 1440); d++) {
       const day = core.addDays(date, d);

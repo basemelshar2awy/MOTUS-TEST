@@ -62,17 +62,16 @@ test('a company creates its own types, only in the categories of its activities'
   await status(cargo.do('vehicleType.update', { code: 'FRZ', payloadKg: 0, seats: 0 }), 400, 'a type keeps seats or payload');
 });
 
-test('cargo bookings: passengers optional, load checked against the payload', async () => {
-  const b = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(2), time: '08:00', pickup: 'CAI', destination: 'ALX', vehicleType: 'TL', loadKg: 1200, price: 2500 }));
+test('cargo bookings are shipments: weight required, checked against the payload', async () => {
+  const b = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(2), time: '08:00', pickup: 'CAI', destination: 'ALX', vehicleType: 'TL', loadKg: 1200, goods: 'Cement bags', price: 2500 }));
   assert.equal((await env.sql('SELECT pax, load_kg FROM bookings WHERE id = $1', [b.id])).rows[0].pax, 1, 'pax defaults to 1 for a cargo type');
   await ok(cargo.do('booking.assign', { bookingId: b.id, vehicleId: ids.tl }));
-  const heavy = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(3), time: '08:00', pickup: 'CAI', destination: 'ALX', vehicleType: 'TL', loadKg: 4000, price: 4000 }));
+  const heavy = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(3), time: '08:00', pickup: 'CAI', destination: 'ALX', vehicleType: 'TL', loadKg: 4000, goods: 'Steel', price: 4000 }));
   const over = await status(cargo.do('booking.assign', { bookingId: heavy.id, vehicleId: ids.tl }), 409, 'load above the payload');
   assert.ok(over.error.reasons.some(r => /payload/i.test(r.en)), JSON.stringify(over.error.reasons));
   await ok(cargo.do('booking.assign', { bookingId: heavy.id, vehicleId: ids.tm }), 'the medium truck carries it');
-  const people = await ok(cargo.do('booking.create', { clientId: ids.cl, date: day(4), time: '08:00', pickup: 'CAI', destination: 'ALX', vehicleType: 'TL', pax: 6, price: 900 }));
-  const seats = await status(cargo.do('booking.assign', { bookingId: people.id, vehicleId: ids.tl }), 409, 'a truck has no passenger seats');
-  assert.ok(seats.error.reasons.some(r => /no passenger seats/.test(r.en)));
+  const noWeight = await status(cargo.do('booking.create', { clientId: ids.cl, date: day(4), time: '08:00', pickup: 'CAI', destination: 'ALX', vehicleType: 'TL', pax: 6, goods: 'Boxes', price: 900 }), 400, 'a shipment needs its weight');
+  assert.equal(noWeight.error.field, 'loadKg');
 });
 
 test('passenger types still need passengers and cannot take a cargo load', async () => {

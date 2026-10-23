@@ -10,7 +10,7 @@ ROUTES = ("dashboard alerts vehicles drivers fuel oil workorders tires bookings 
           "readiness inspections availability subcontract incidents handover documents driverapp clients invoices "
           "payments expenses journal items stock movements purchasing suppliers counts livemap history geofences "
           "behavior devices reports copilot assign profit fuelai maintai pricing docai invai reconai insights "
-          "company users vtypes coa erp providers reconcile api audit aisettings contracts mytrips").split()
+          "company users vtypes coa erp providers reconcile api audit aisettings contracts lines mytrips").split()
 errors = []
 
 with sync_playwright() as p:

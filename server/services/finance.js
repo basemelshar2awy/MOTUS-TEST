@@ -11,8 +11,10 @@ const { bad, conflict, notFound } = require('../lib/errors');
 
 const has = (o, f) => Object.prototype.hasOwnProperty.call(o || {}, f);
 const round2 = V.round2;
-const TYPE_AR = { airport: 'استقبال مطار', city: 'جولة داخلية', intercity: 'بين المدن', hire: 'تأجير خاص' };
-const TYPE_EN = { airport: 'Airport transfer', city: 'City tour', intercity: 'Intercity', hire: 'Private hire' };
+const profiles = require('../lib/profiles');
+// trip type names and revenue accounts follow the activity (lib/profiles)
+const TYPE_AR = new Proxy({}, { get: (_, k) => profiles.typeName(k).ar });
+const TYPE_EN = new Proxy({}, { get: (_, k) => profiles.typeName(k).en });
 
 async function placeNames(c) { const r = await c.query('SELECT code, name_ar, name_en FROM places'); return Object.fromEntries(r.rows.map(p => [p.code, p])); }
 
@@ -64,7 +66,7 @@ define('invoice.fromTrips', G.finance, async (ctx, i, c) => {
   }
   const pl = await placeNames(c);
   trips.sort((a, b) => (a.date + a.start_time < b.date + b.start_time ? -1 : 1));
-  const lines = trips.map(t => ({ ar: `${TYPE_AR[t.type]}: ${(pl[t.from_place] || {}).name_ar || t.from_place} ← ${(pl[t.to_place] || {}).name_ar || t.to_place} (${t.number} · ${t.date})`, en: `${TYPE_EN[t.type]}: ${(pl[t.from_place] || {}).name_en || t.from_place} → ${(pl[t.to_place] || {}).name_en || t.to_place} (${t.number} · ${t.date})`, qty: 1, unit: t.revenue, revKey: 'revenue_' + t.type, tripId: t.id, bookingId: t.booking_id }));
+  const lines = trips.map(t => ({ ar: `${TYPE_AR[t.type]}: ${(pl[t.from_place] || {}).name_ar || t.from_place} ← ${(pl[t.to_place] || {}).name_ar || t.to_place} (${t.number} · ${t.date})`, en: `${TYPE_EN[t.type]}: ${(pl[t.from_place] || {}).name_en || t.from_place} → ${(pl[t.to_place] || {}).name_en || t.to_place} (${t.number} · ${t.date})`, qty: 1, unit: t.revenue, revKey: profiles.revenueKey(t.type), tripId: t.id, bookingId: t.booking_id }));
   const inv = await createInvoice(c, ctx, client, lines, Object.assign(invOpts(i), { source: 'trips' }));
   const r = await c.query("UPDATE trips SET invoice_id = $1 WHERE id = ANY($2::uuid[]) AND invoice_id IS NULL AND status = 'completed'", [inv.id, ids]);
   if (r.rowCount !== ids.length) throw conflict('invoiced', 'بعض الرحلات اتفوترت في نفس اللحظة من مستخدم آخر', 'Some trips were invoiced at the same moment by another user');
@@ -91,8 +93,8 @@ define('invoice.fromBooking', G.finance, async (ctx, i, c) => {
   if (already) throw conflict('invoiced', `الحجز مفوتر بالفاتورة ${already.number}`, `The booking is already invoiced (${already.number})`);
   const client = await core.mustExist(c, 'clients', b.client_id, 'client');
   const pl = await placeNames(c);
-  const type = b.route_type || 'city';
-  const inv = await createInvoice(c, ctx, client, [{ ar: `${TYPE_AR[type]}: ${(pl[b.pickup] || {}).name_ar || b.pickup} ← ${(pl[b.destination] || {}).name_ar || b.destination} (${b.number} · ${b.date})`, en: `${TYPE_EN[type]}: ${(pl[b.pickup] || {}).name_en || b.pickup} → ${(pl[b.destination] || {}).name_en || b.destination} (${b.number} · ${b.date})`, qty: 1, unit: b.price, revKey: 'revenue_' + type, bookingId: b.id }], Object.assign(invOpts(i), { source: 'booking' }));
+  const type = b.trip_type || b.route_type || 'city';
+  const inv = await createInvoice(c, ctx, client, [{ ar: `${TYPE_AR[type]}: ${(pl[b.pickup] || {}).name_ar || b.pickup} ← ${(pl[b.destination] || {}).name_ar || b.destination} (${b.number} · ${b.date})`, en: `${TYPE_EN[type]}: ${(pl[b.pickup] || {}).name_en || b.pickup} → ${(pl[b.destination] || {}).name_en || b.destination} (${b.number} · ${b.date})`, qty: 1, unit: b.price, revKey: profiles.revenueKey(type), bookingId: b.id }], Object.assign(invOpts(i), { source: 'booking' }));
   await c.query("UPDATE trips SET invoice_id = $1 WHERE booking_id = $2 AND invoice_id IS NULL AND status <> 'cancelled'", [inv.id, b.id]);
   return { id: inv.id, number: inv.number };
 });
@@ -101,7 +103,7 @@ define('invoice.manual', G.finance, async (ctx, i, c) => {
   const client = await core.mustExist(c, 'clients', V.uuid(i, 'clientId', { req: true }), 'client');
   const lines = V.arr(i, 'lines', { req: true, min: 1, max: 100 }).map(l => {
     const d = V.text2(l, 'description', { req: true, max: 300 });
-    return { ar: d.ar, en: d.en, qty: V.num(l, 'qty', { gt: 0, def: 1 }), unit: V.num(l, 'unit', { req: true, min: 0 }), revKey: V.oneOf(l, 'revenue', ['revenue_airport', 'revenue_city', 'revenue_intercity', 'revenue_hire', 'revenue_program', 'revenue_other'], { def: 'revenue_other' }) };
+    return { ar: d.ar, en: d.en, qty: V.num(l, 'qty', { gt: 0, def: 1 }), unit: V.num(l, 'unit', { req: true, min: 0 }), revKey: V.oneOf(l, 'revenue', ['revenue_airport', 'revenue_city', 'revenue_intercity', 'revenue_hire', 'revenue_program', 'revenue_education', 'revenue_staff', 'revenue_lines', 'revenue_cargo', 'revenue_contract', 'revenue_other'], { def: 'revenue_other' }) };
   });
   const inv = await createInvoice(c, ctx, client, lines, Object.assign(invOpts(i), { source: 'manual' }));
   return { id: inv.id, number: inv.number };

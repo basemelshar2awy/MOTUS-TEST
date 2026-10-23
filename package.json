@@ -1,6 +1,6 @@
 {
   "name": "motus-fleet",
-  "version": "1.1.0-preview.1",
+  "version": "1.1.0-preview.2",
   "private": true,
   "description": "MOTUS Fleet — multi-company fleet management for tourism transport (Node.js 22 + PostgreSQL)",
   "license": "UNLICENSED",

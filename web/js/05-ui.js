@@ -94,7 +94,7 @@
     { g: ['السائق', 'Driver'], items: [['mytrips', 'bus', 'رحلاتي', 'My trips', ['driver']]] },
     { g: ['الرئيسية', 'Overview'], items: [['dashboard', 'dashboard', 'لوحة التحكم', 'Executive dashboard', [...ALL, 'operations', 'accountant', 'maintenance', 'viewer']], ['alerts', 'bell', 'التنبيهات', 'Alerts', [...ALL, 'operations', 'accountant', 'maintenance', 'viewer']]] },
     { g: ['مدير الحركة', 'Dispatch'], items: [['dispatch', 'board', 'لوحة توزيع الحركة', 'Dispatch board', [...ALL, 'operations']], ['calendar', 'calendar', 'تقويم الحركة', 'Operations calendar', [...ALL, 'operations', 'viewer']], ['readiness', 'shield', 'جاهزية المركبات', 'Vehicle readiness', [...ALL, 'operations', 'maintenance']], ['inspections', 'clipboard', 'فحص ما قبل الرحلة', 'Pre-trip inspections', [...ALL, 'operations', 'maintenance']], ['availability', 'clock', 'إتاحة السائقين', 'Driver availability', [...ALL, 'operations']], ['subcontract', 'truck', 'مركبات من الباطن', 'Subcontracted vehicles', [...ALL, 'operations', 'accountant']], ['incidents', 'alert', 'الحوادث والمخالفات', 'Accidents & fines', [...ALL, 'operations']], ['handover', 'history', 'تسليم الشيفت', 'Shift handover', [...ALL, 'operations']], ['documents', 'folder', 'المستندات', 'Document vault', [...ALL, 'operations', 'maintenance']], ['driverapp', 'phone', 'شاشة السائق', 'Driver app view', [...ALL, 'operations']]] },
-    { g: ['العمليات', 'Operations'], items: [['bookings', 'ticket', 'الحجوزات', 'Bookings', [...ALL, 'operations', 'accountant', 'viewer']], ['programs', 'route', 'البرامج السياحية', 'Tour programs', [...ALL, 'operations', 'accountant', 'viewer']], ['trips', 'bus', 'الرحلات', 'Trips', [...ALL, 'operations', 'accountant', 'viewer']], ['contracts', 'clipboard', 'عقود التشغيل', 'Operating contracts', [...ALL, 'operations', 'accountant', 'viewer']]] },
+    { g: ['العمليات', 'Operations'], items: [['bookings', 'ticket', 'الحجوزات', 'Bookings', [...ALL, 'operations', 'accountant', 'viewer']], ['programs', 'route', 'البرامج السياحية', 'Tour programs', [...ALL, 'operations', 'accountant', 'viewer']], ['lines', 'route', 'الخطوط', 'Lines', [...ALL, 'operations', 'accountant', 'viewer']], ['trips', 'bus', 'الرحلات', 'Trips', [...ALL, 'operations', 'accountant', 'viewer']], ['contracts', 'clipboard', 'عقود التشغيل', 'Operating contracts', [...ALL, 'operations', 'accountant', 'viewer']]] },
     { g: ['الأسطول', 'Fleet'], items: [['vehicles', 'car', 'المركبات', 'Vehicles', [...ALL, 'operations', 'accountant', 'maintenance', 'viewer']], ['drivers', 'users', 'السائقين', 'Drivers', [...ALL, 'operations', 'viewer']], ['fuel', 'fuel', 'المحروقات', 'Fuel', [...ALL, 'maintenance', 'accountant']], ['oil', 'oil', 'الزيت والصيانة', 'Oil & maintenance', [...ALL, 'maintenance']], ['workorders', 'wrench', 'أوامر الشغل', 'Work orders', [...ALL, 'maintenance']], ['tires', 'tire', 'الكاوتش والبطاريات', 'Tires & batteries', [...ALL, 'maintenance']]] },
     { g: ['المخازن', 'Warehouses'], items: [['items', 'box', 'الأصناف وقطع الغيار', 'Items & spare parts', [...ALL, 'maintenance', 'accountant']], ['stock', 'warehouse', 'المخازن والأرصدة', 'Warehouses & stock', [...ALL, 'maintenance', 'accountant']], ['movements', 'swap', 'حركة المخزون', 'Stock movements', [...ALL, 'maintenance', 'accountant']], ['purchasing', 'cart', 'طلبات وأوامر الشراء', 'Purchasing', [...ALL, 'maintenance', 'accountant']], ['suppliers', 'building', 'الموردين', 'Suppliers', [...ALL, 'maintenance', 'accountant']], ['counts', 'clipboard', 'الجرد', 'Stock counts', [...ALL, 'maintenance', 'accountant']]] },
     { g: ['التتبع', 'Tracking'], items: [['livemap', 'map', 'الخريطة المباشرة', 'Live map', [...ALL, 'operations', 'viewer']], ['history', 'route', 'سجل المسارات', 'Route history', [...ALL, 'operations']], ['geofences', 'pin', 'المناطق الجغرافية', 'Geofences', [...ALL, 'operations']], ['behavior', 'gauge', 'سلوك السائقين', 'Driver behavior', [...ALL, 'operations']], ['devices', 'radio', 'أجهزة التتبع', 'Tracking devices', [...ALL, 'maintenance']]] },
@@ -105,7 +105,9 @@
   ];
   U.navItem = id => { for (const g of U.nav) for (const it of g.items) if (it[0] === id) return { g, it }; return null; };
   /* screens that belong to one activity (anything not listed is shared core) */
-  U.navActivity = { programs: 'tourism' };
+  U.navActivity = { programs: 'tourism', lines: ['education', 'staff', 'intercity'] };
+  /* nav labels in the company's words (a cargo company's bookings are its shipments) */
+  U.navLabel = it => { if (it[0] === 'bookings' && M.single()) return M.L(M.prof(M.single()).units); return M.tt(it[2], it[3]); };
   U.activityOf = id => U.navActivity[id] || U.navActivity[U.routeParent[id]] || null;
   U.can = id => { if (!M.has(U.activityOf(id))) return false; const n = U.navItem(id); return !n || n.it[4].includes(M.state.role); };
   U.readOnly = () => M.state.role === 'viewer';
@@ -125,7 +127,7 @@
     const navHtml = U.nav.map(g => {
       const items = g.items.filter(it => it[4].includes(M.state.role) && M.has(U.navActivity[it[0]]));
       if (!items.length) return '';
-      return `<div class="nav-group"><div class="nav-group-title">${M.tt(g.g[0], g.g[1])}</div>${items.map(it => `<a href="#${it[0]}" data-nav="${it[0]}">${U.icon(it[1])}<span>${M.tt(it[2], it[3])}</span>${it[0] === 'alerts' ? `<span class="count">${alerts.length}</span>` : it[0] === 'dispatch' ? `<span class="count">${U.db().bookings.filter(b => b.unassigned).length}</span>` : ''}</a>`).join('')}</div>`;
+      return `<div class="nav-group"><div class="nav-group-title">${M.tt(g.g[0], g.g[1])}</div>${items.map(it => `<a href="#${it[0]}" data-nav="${it[0]}">${U.icon(it[1])}<span>${U.navLabel(it)}</span>${it[0] === 'alerts' ? `<span class="count">${alerts.length}</span>` : it[0] === 'dispatch' ? `<span class="count">${U.db().bookings.filter(b => b.unassigned).length}</span>` : ''}</a>`).join('')}</div>`;
     }).join('');
     let root = document.getElementById('app-root'); if (!root) { root = document.createElement('div'); root.id = 'app-root'; document.body.appendChild(root); }
     root.innerHTML = `
@@ -162,13 +164,13 @@
     if (U.timers) U.timers.forEach(t => clearInterval(t)); U.timers = [];
     if (M.state.role === 'driver' && name !== 'mytrips') { location.hash = 'mytrips'; return; }   // a driver has one page: their trips
     const fn = U.routes[name] || U.routes.dashboard;
-    if (!M.has(U.activityOf(name))) { const n = (M.activityCatalog.find(x => x.code === U.activityOf(name)) || { name: { ar: '', en: '' } }).name; main.innerHTML = U.empty('lock', M.tt(`نشاط "${n.ar}" مش مفعّل لشركتك`, `The "${n.en}" activity is not enabled for your company`), M.tt('تواصل مع فريق سبيل لتفعيله.', 'Contact the Sabeel team to enable it.')); return; }
+    if (!M.has(U.activityOf(name))) { const n = (M.activityCatalog.find(x => x.code === [].concat(U.activityOf(name))[0]) || { name: { ar: '', en: '' } }).name; main.innerHTML = U.empty('lock', M.tt(`نشاط "${n.ar}" مش مفعّل لشركتك`, `The "${n.en}" activity is not enabled for your company`), M.tt('تواصل مع فريق سبيل لتفعيله.', 'Contact the Sabeel team to enable it.')); return; }
     if (!U.can(name)) { main.innerHTML = U.empty('lock', M.tt('لا تملك صلاحية لهذه الصفحة', 'You don’t have access to this page'), M.tt('اطلب من مدير النظام تعديل صلاحيات حسابك إذا كنت تحتاجها.', 'Ask your company admin to change your role if you need it.')); return; }
     try { main.innerHTML = fn(id) || ''; if (U.after.length) { const a = U.after; U.after = []; a.forEach(f => f()); } }
     catch (e) { console.error(e); main.innerHTML = U.empty('alert', M.tt('حصل خطأ في عرض الصفحة', 'This page failed to load'), String(e.message)); }
     window.scrollTo(0, 0);
   };
-  U.routeParent = { vehicle: 'vehicles', driver: 'drivers', client: 'clients', program: 'programs', trip: 'trips', contract: 'contracts', invoice: 'invoices', booking: 'bookings', wo: 'workorders', item: 'items', je: 'journal', report: 'reports' };
+  U.routeParent = { vehicle: 'vehicles', driver: 'drivers', client: 'clients', program: 'programs', trip: 'trips', line: 'lines', contract: 'contracts', invoice: 'invoices', booking: 'bookings', wo: 'workorders', item: 'items', je: 'journal', report: 'reports' };
   U.after = []; U.charts = []; U.timers = [];
   U.onMount = fn => U.after.push(fn);
 
@@ -215,7 +217,9 @@
   /* entity labels */
   U.vtype = t => M.vehicleClasses[t] ? M.L(M.vehicleClasses[t].name) : (t || '—');
   /* a vehicle's capacity in words: seats for passenger vehicles, payload for cargo ones */
-  U.capacity = v => (v.seats > 0 ? `${v.seats} ${M.tt('مقعد', 'seats')}` : '') + ((v.payloadKg || 0) > 0 ? `${v.seats > 0 ? ' · ' : ''}${M.n0(v.payloadKg)} ${M.tt('كجم', 'kg')}` : '');
+  /* a vehicle's capacity in the activity's terms: seats for people, payload for shipments */
+  U.capacity = (v, act) => { act = act || M.single(); const seats = v.seats > 0 ? `${v.seats} ${M.tt('مقعد', 'seats')}` : ''; const load = (v.payloadKg || 0) > 0 ? `${M.n0(v.payloadKg)} ${M.tt('كجم', 'kg')}` : '';
+    if (act === 'cargo') return load || seats; if (act) return seats || load; return [seats, load].filter(Boolean).join(' · '); };
   /* a form field for an identity number, labelled and checked the way the company's country writes it */
   U.idField = (f, key, fallback, value) => { const p = M.field(key, fallback); return { f, label: M.L(p.label), value, help: p.hint ? M.L(p.hint) : '', attrs: `dir="ltr" inputmode="numeric"${p.placeholder ? ` placeholder="${p.placeholder}"` : ''}${p.pattern ? ` pattern="${p.pattern.replace(/^\^|\$$/g, '')}"` : ''}` }; };
   U.licenseOptions = () => (M.pack ? M.pack.licenseClasses : [['first', { ar: 'أولى', en: 'First' }], ['second', { ar: 'ثانية', en: 'Second' }], ['third', { ar: 'ثالثة', en: 'Third' }], ['professional', { ar: 'مهنية', en: 'Professional' }]]).map(([k, n]) => [k, M.L(n)]);
@@ -237,6 +241,7 @@
   /* ---------- data table ---------- */
   let tblSeq = 0; U.tables = {};
   U.table = (cfg) => {
+    if (cfg.filters) cfg.filters = cfg.filters.filter(Boolean);
     const id = cfg.id || ('t' + (++tblSeq));
     const st = U.tables[id] = Object.assign({ page: 0, q: '', sort: cfg.sort || null, dir: cfg.dir || -1, filters: {}, size: cfg.pageSize || 15 }, U.tables[id] && U.tables[id].keep ? U.tables[id] : {}, { cfg });
     U.onMount(() => U.drawTable(id));

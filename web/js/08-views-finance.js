@@ -2,7 +2,9 @@
 'use strict';
 (function () {
   const U = M.ui, C = M.calc, tt = M.tt;
-  const ctype = { agency: ['وكالة سياحة', 'Travel agency'], hotel: ['فندق', 'Hotel'], company: ['شركة', 'Company'], individual: ['فرد', 'Individual'] };
+  // client types come with the activities (lib/profiles): agencies and hotels for tourism, schools for education, shippers for cargo
+  const ctype = new Proxy({}, { get: (_, k) => { const v = M.profiles.clientTypes[k]; return v ? [v.ar, v.en] : [String(k), String(k)]; } });
+  const ctypeOpts = keep => [...new Set(M.clientTypesFor().concat(keep ? [keep] : []))].map(k => [k, tt(...ctype[k])]);
   U.invStatus = (cid, inv) => { const bal = C.invoiceBalance(cid, inv); if (inv.status === 'draft' || inv.status === 'cancelled') return inv.status; if (bal <= 1) return 'paid'; if (M.diffDays(M.TODAY, inv.dueDate) > 0) return inv.paid > 0 ? 'partial' : 'overdue'; return inv.paid > 0 ? 'partial' : 'issued'; };
 
   /* ================= CLIENTS ================= */
@@ -22,7 +24,7 @@
         { label: tt('متأخر', 'Overdue'), num: 1, value: r => r.s.overdue, render: r => r.s.overdue ? `<span class="neg num">${M.money(r.s.overdue)}</span>` : '—' },
         { label: tt('حد الائتمان', 'Credit limit'), num: 1, value: r => r.c.creditLimit, render: r => r.c.creditLimit ? M.money(r.c.creditLimit) + (r.s.balance > r.c.creditLimit ? ' ' + U.badge(tt('تجاوز', 'Over'), 'danger') : '') : '—' },
         { label: 'ERP', value: r => r.c.externalRef || '', render: r => r.c.externalRef ? `<code>${r.c.externalRef}</code>` : '—' },
-      ], filters: [{ label: tt('النوع', 'Type'), get: r => r.c.type, options: Object.entries(ctype).map(([k, v]) => [k, tt(...v)]) }], onRow: r => 'client.' + r.c.id }), { flush: true });
+      ], filters: [{ label: tt('النوع', 'Type'), get: r => r.c.type, options: ctypeOpts() }], onRow: r => 'client.' + r.c.id }), { flush: true });
   });
 
   let cTab = 'statement';
@@ -53,7 +55,7 @@
   U.invoiceTable = (id, rows) => {
     const cid = U.cid();
     return U.table({ id, rows: rows.slice().sort((a, b) => a.issueDate < b.issueDate ? 1 : -1), columns: [
-      { label: tt('الفاتورة', 'Invoice'), value: i => i.number, render: i => `<a class="cell-main" href="#invoice.${i.id}">${i.number}</a><div class="cell-sub">${({ program: tt('برنامج', 'Program'), trips: tt('رحلات', 'Trips'), booking: tt('حجز', 'Booking'), manual: tt('يدوية', 'Manual') })[i.source] || i.source}${i.currency !== 'EGP' ? ' · ' + i.currency : ''}</div>` },
+      { label: tt('الفاتورة', 'Invoice'), value: i => i.number, render: i => `<a class="cell-main" href="#invoice.${i.id}">${i.number}</a><div class="cell-sub">${({ program: tt('برنامج', 'Program'), trips: tt('رحلات', 'Trips'), booking: tt('حجز', 'Booking'), manual: tt('يدوية', 'Manual'), contract: tt('عقد تشغيل', 'Operating contract') })[i.source] || i.source}${i.currency !== 'EGP' ? ' · ' + i.currency : ''}</div>` },
       { label: tt('العميل', 'Client'), value: i => M.L(U.find('clients', i.clientId).name) },
       { label: tt('التاريخ', 'Date'), value: i => i.issueDate, render: i => M.date(i.issueDate) },
       { label: tt('الاستحقاق', 'Due'), value: i => i.dueDate, render: i => M.date(i.dueDate) },
@@ -67,7 +69,7 @@
   U.route('invoices', () => {
     const cid = U.cid(), db = U.db();
     const uninv = db.trips.filter(t => t.status === 'completed' && !t.invoiced);
-    return U.head(tt('الفواتير', 'Invoices'), tt('فاتورة من حجز أو برنامج كامل أو مجموعة رحلات مكتملة لعميل. الرحلة لا تُفوتر مرتين.', 'Invoice a booking, a full program, or completed trips for one client. A trip can’t be invoiced twice.'), (['super_admin', 'company_admin', 'fleet_manager', 'accountant'].includes(M.state.role) ? `${U.btn(tt('فاتورة من رحلات مكتملة', 'Invoice completed trips'), 'new-invoice', '', 'plus')}${U.btn(tt('فاتورة يدوية', 'Manual invoice'), 'inv-manual', 'secondary', 'file')}` : '')) +
+    return U.head(tt('الفواتير', 'Invoices'), (M.has('tourism') ? tt('فاتورة من حجز أو برنامج كامل أو مجموعة رحلات مكتملة لعميل. الرحلة لا تُفوتر مرتين.', 'Invoice a booking, a full program, or completed trips for one client. A trip can’t be invoiced twice.') : tt('فاتورة من حجز أو شحنة أو مجموعة رحلات مكتملة لعميل، أو من عقد التشغيل. الرحلة لا تُفوتر مرتين.', 'Invoice a booking or shipment, completed trips for one client, or an operating contract. A trip can’t be invoiced twice.')), (['super_admin', 'company_admin', 'fleet_manager', 'accountant'].includes(M.state.role) ? `${U.btn(tt('فاتورة من رحلات مكتملة', 'Invoice completed trips'), 'new-invoice', '', 'plus')}${U.btn(tt('فاتورة يدوية', 'Manual invoice'), 'inv-manual', 'secondary', 'file')}` : '')) +
       U.kpis([U.kpi(tt('فواتير صادرة', 'Issued invoices'), db.invoices.filter(i => i.status !== 'cancelled').length), U.kpi(tt('إجمالي الفواتير', 'Invoiced total'), M.moneyK(M.sum(db.invoices.filter(i => i.status !== 'cancelled'), i => i.total * (i.rate || 1)))), U.kpi(tt('المتبقي للتحصيل', 'Outstanding'), M.moneyK(C.aging(cid).total)), U.kpi(tt('رحلات غير مفوترة', 'Un-invoiced trips'), uninv.length, M.moneyK(M.sum(uninv, t => t.revenue))), U.kpi(tt('إشعارات دائنة', 'Credit notes'), db.creditNotes.length)]) +
       U.card(null, U.invoiceTable('invoices', db.invoices), { flush: true });
   });
@@ -76,7 +78,7 @@
     const db = U.db(); const groups = M.groupBy(db.trips.filter(t => t.status === 'completed' && !t.invoiced && !t.programId), t => t.clientId);
     const pre = el && el.dataset && el.dataset.client;
     const opts = [...groups.keys()].map(k => [k, `${M.L(U.find('clients', k).name)} — ${groups.get(k).length} ${tt('رحلة', 'trips')}`]);
-    if (!opts.length) { U.toast(tt('لا توجد رحلات مكتملة غير مفوترة (رحلات البرامج تُفوتر من صفحة البرنامج)', 'No completed un-invoiced trips (program trips are invoiced from the program page)')); return; }
+    if (!opts.length) { U.toast((M.has('tourism') ? tt('لا توجد رحلات مكتملة غير مفوترة (رحلات البرامج تُفوتر من صفحة البرنامج)', 'No completed un-invoiced trips (program trips are invoiced from the program page)') : tt('لا توجد رحلات مكتملة غير مفوترة (رحلات العقود تُفوتر من صفحة العقد)', 'No completed un-invoiced trips (contract trips are billed from the contract page)'))); return; }
     U.modal(tt('فاتورة جديدة من الرحلات المكتملة', 'New invoice from completed trips'), `<div class="form">${U.field('ni-client', tt('العميل', 'Client'), U.select('ni-client', opts, pre && groups.has(pre) ? pre : opts[0][0]), { full: true })}${U.field('ni-date', tt('تاريخ الإصدار', 'Issue date'), U.input('ni-date', M.TODAY, 'date'))}${U.field('ni-disc', tt('خصم (مبلغ)', 'Discount (amount)'), U.input('ni-disc', '0', 'number', 'min="0"'))}</div><div id="ni-lines" style="margin-top:12px"></div>`, `<button class="btn secondary" data-act="close-overlay">${tt('إلغاء', 'Cancel')}</button><button class="btn" data-act="issue-invoice">${tt('إصدار الفاتورة', 'Issue invoice')}</button>`);
     const upd = () => { const ts = (groups.get(U.val('ni-client')) || []).slice().sort((x, y) => x.date < y.date ? -1 : 1); const vat = U.db().settings.vatRate; document.getElementById('ni-lines').innerHTML = ts.map(t => `<label class="list-row"><input type="checkbox" class="ni-t" value="${t.id}" data-r="${t.revenue}" checked style="accent-color:#08264A"><div class="grow"><div class="t">${t.number} · ${M.date(t.date)}</div><div class="s">${U.routeTxt(t.from, t.to)}</div></div><b class="num">${M.money(t.revenue)}</b></label>`).join('') + `<div class="dl" id="ni-tot" style="margin-top:10px"></div>`; const tot = () => { const sub = M.sum([...document.querySelectorAll('.ni-t:checked')], x => +x.dataset.r); const disc = +U.val('ni-disc') || 0; document.getElementById('ni-tot').innerHTML = `<dt>${tt('الإجمالي قبل الضريبة', 'Subtotal')}</dt><dd class="num">${M.money(sub)}</dd><dt>${tt('خصم', 'Discount')}</dt><dd class="num">${M.money(disc)}</dd><dt>${tt('ضريبة القيمة المضافة', 'VAT')} ${M.pct(vat, 0)}</dt><dd class="num">${M.money((sub - disc) * vat)}</dd><dt>${tt('الإجمالي', 'Total')}</dt><dd class="num"><b>${M.money((sub - disc) * (1 + vat))}</b></dd>`; }; document.querySelectorAll('.ni-t').forEach(x => x.addEventListener('change', tot)); document.getElementById('ni-disc').addEventListener('input', tot); tot(); };
     document.getElementById('ni-client').addEventListener('change', upd); upd();
@@ -167,7 +169,7 @@
   ], 'expense.create', { ok: tt('تم تسجيل المصروف والقيد', 'Expense and journal entry recorded') }); });
   const ctFields = c => { c = c || {}; return [
     { f: 'name', label: tt('الاسم', 'Name'), value: c.name ? M.L(c.name) : '', req: true },
-    { f: 'type', label: tt('النوع', 'Type'), type: 'select', value: c.type || 'agency', options: Object.entries(ctype).map(([k, v]) => [k, tt(...v)]) },
+    { f: 'type', label: tt('النوع', 'Type'), type: 'select', value: c.type || M.clientTypesFor()[0], options: ctypeOpts(c.type) },
     U.idField('taxNo', 'taxNo', ['الرقم الضريبي', 'Tax ID'], c.taxNo), U.idField('crNo', 'crNo', ['السجل التجاري', 'Commercial register'], c.crNo),
     { f: 'contact', label: tt('مسؤول التواصل', 'Contact person'), value: c.contact ? M.L(c.contact) : '' }, { f: 'phone', label: tt('الهاتف', 'Phone'), value: c.phone, attrs: 'dir="ltr"' },
     { f: 'email', label: tt('البريد', 'Email'), type: 'email', value: c.email, attrs: 'dir="ltr"' }, { f: 'address', label: tt('العنوان', 'Address'), value: c.address ? M.L(c.address) : '' },

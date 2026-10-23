@@ -80,8 +80,13 @@ async function gate(c, ctx, name, def, input) {
   if (name === 'trip.passengers' && !list.includes('tourism') && Array.isArray(out.passengers)) {
     out = Object.assign({}, out, { passengers: out.passengers.map(p => { if (!p || typeof p !== 'object') return p; const q = Object.assign({}, p); for (const f of Object.keys(PASSENGER_FIELDS)) delete q[f]; return q; }) });
   }
-  if ((name === 'place.create' || name === 'place.update') && out.kind && PLACE_KIND_ACTIVITY[out.kind] && !has(list, PLACE_KIND_ACTIVITY[out.kind])) {
-    throw disabledError(PLACE_KIND_ACTIVITY[out.kind]);
+  if ((name === 'place.create' || name === 'place.update') && out.kind) {
+    // a place kind belongs to the activities that use it (lib/profiles); garages, clients and restricted areas to everyone
+    const P = require('./profiles');
+    if (!P.COMMON_PLACE_KINDS.includes(out.kind) && !list.some(a => P.PROFILES[a] && P.PROFILES[a].placeKinds.includes(out.kind))) {
+      const owner = P.CODES.find(a => P.PROFILES[a].placeKinds.includes(out.kind));
+      if (owner) throw disabledError(owner);
+    }
   }
   return out;
 }
@@ -118,6 +123,15 @@ async function apply(c, companyId, list, actor) {
   }
   // a newly enabled activity brings its starting vehicle types (lazy require: vehicletypes needs this module)
   if (on.length) await require('./vehicletypes').seedDefaults(c, companyId, list);
+  // and its starting places (kept if the company already has them)
+  if (on.length && rows.length) {
+    const P = require('./profiles'), C = require('./countries');
+    const co = (await c.query('SELECT country FROM companies WHERE id = $1', [companyId])).rows[0];
+    const pack = C.pack(co && co.country);
+    for (const [code, ar, en, lat, lng, kind, radius] of P.placesFor(pack.places, pack.code, on)) {
+      await c.query('INSERT INTO places (company_id, code, name_ar, name_en, kind, lat, lng, radius_m) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING', [companyId, code, ar, en, kind, lat, lng, radius]);
+    }
+  }
   return { enabled: on, disabled: off };
 }
 

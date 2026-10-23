@@ -8,6 +8,7 @@ const V = require('./validate');
 const D = require('./defaults');
 const activities = require('./activities');
 const countries = require('./countries');
+const profiles = require('./profiles');
 const { bad, conflict, notFound, fromPg } = require('./errors');
 
 async function seedCompany(c, companyId, opts) {
@@ -16,8 +17,11 @@ async function seedCompany(c, companyId, opts) {
   await ins('INSERT INTO company_settings (company_id, data) VALUES ($1, $2)', [companyId, JSON.stringify(Object.assign({ goLive: core.today() }, pack.settings))]);
   // vehicle types come with the company's activities (activities.apply → vehicletypes.seedDefaults)
   if (opts.referencePlaces !== false) {
-    for (const [code, ar, en, lat, lng, kind, radius] of pack.places) await ins('INSERT INTO places (company_id, code, name_ar, name_en, kind, lat, lng, radius_m) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [companyId, code, ar, en, kind, lat, lng, radius]);
-    for (const [base, from, to, km, type, gates, hours] of pack.routes) await ins('INSERT INTO routes (company_id, base_city, from_code, to_code, km, type, toll_gates, hours) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [companyId, base, from, to, km, type, gates, hours]);
+    // starting places of the company's activities only (a cargo company gets no airports or hotels)
+    const places = profiles.placesFor(pack.places, opts.country || 'EG', opts.activities || ['tourism']);
+    for (const [code, ar, en, lat, lng, kind, radius] of places) await ins('INSERT INTO places (company_id, code, name_ar, name_en, kind, lat, lng, radius_m) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING', [companyId, code, ar, en, kind, lat, lng, radius]);
+    const have = new Set(places.map(p => p[0]));
+    for (const [base, from, to, km, type, gates, hours] of pack.routes.filter(x => have.has(x[0]) && have.has(x[1]) && have.has(x[2]))) await ins('INSERT INTO routes (company_id, base_city, from_code, to_code, km, type, toll_gates, hours) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [companyId, base, from, to, km, type, gates, hours]);
   }
   for (const [key, ar, en, code] of D.COA) await ins('INSERT INTO coa (company_id, key, name_ar, name_en, code, erp_code) VALUES ($1,$2,$3,$4,$5,$5)', [companyId, key, ar, en, code]);
   const branches = opts.branches && opts.branches.length ? opts.branches : [{ code: pack.branch.code, city: pack.branch.city, ar: 'الفرع الرئيسي', en: 'Head office' }];
@@ -57,7 +61,7 @@ async function createCompany(actor, input) {
     if (existing && existing.role === 'super_admin') throw conflict('email_taken', 'البريد ده لحساب في فريق سبيل', 'That email belongs to a Sabeel team account');
     const co = (await client.query('INSERT INTO companies (code, name_ar, name_en, tax_no, currency, country, timezone) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id', [code, name.ar, name.en, taxNo, V.oneOf(input, 'currency', ['EGP', 'USD', 'EUR', 'SAR'], { def: pack.currency }), country, pack.timezone])).rows[0];
     await client.query("SELECT set_config('app.company_id', $1, true)", [co.id]);
-    const branchId = await core.withTz(pack.timezone, () => seedCompany(client, co.id, { branches, country, referencePlaces: input.referencePlaces !== false }));
+    const branchId = await core.withTz(pack.timezone, () => seedCompany(client, co.id, { branches, country, activities: acts, referencePlaces: input.referencePlaces !== false }));
     await activities.apply(client, co.id, acts, actor ? actor.name : 'setup');
     const u = existing || (await client.query(`INSERT INTO users (email, name_ar, name_en, role, password_hash, must_change_password, last_company_id)
       VALUES ($1,$2,$3,'member',$4,$5,$6) RETURNING id`, [email, adminName.ar, adminName.en, hash, temporary, co.id])).rows[0];

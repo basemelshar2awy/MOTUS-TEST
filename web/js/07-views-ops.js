@@ -3,7 +3,9 @@
 'use strict';
 (function () {
   const U = M.ui, C = M.calc, tt = M.tt;
-  const tripTypeTxt = k => M.L(M.tripTypes[k]);
+  const tripTypeTxt = k => M.L(M.typeName(k));
+  // the trip types of the company's activities (+ operating-contract trips)
+  const companyTypes = () => [...new Set(M.acts().flatMap(a => Object.keys(M.prof(a).tripTypes)).concat('contract'))];
 
   /* ---------- availability check used by booking form, dispatch board and AI ---------- */
   U.candidates = (b, opts = {}) => {
@@ -20,9 +22,13 @@
     const bStartTs = `${b.date} ${b.time || '10:00'}`, bEndTs = shiftLocal(bStartTs, Math.round(hours * 60) + 15);
     return db.vehicles.filter(v => v.status !== 'sold').map(v => {
       const reasons = [], warns = [];
-      if (v.seats > 0 && v.seats < b.pax) reasons.push([`السعة ${v.seats} مقعد أقل من ${b.pax} راكب`, `Capacity ${v.seats} is below ${b.pax} passengers`]);
-      if (!(v.seats > 0) && b.pax > 1) reasons.push(['المركبة دي للبضائع ومافيهاش كراسي ركاب', 'This vehicle carries cargo and has no passenger seats']);
-      if (b.loadKg && (v.payloadKg || 0) < b.loadKg) reasons.push([`الحمولة ${M.n0(v.payloadKg || 0)} كجم أقل من ${M.n0(b.loadKg)} كجم`, `Payload ${M.n0(v.payloadKg || 0)} kg is below ${M.n0(b.loadKg)} kg`]);
+      // a shipment needs payload; people need seats (the activity decides which)
+      const isCargo = (b.activity || M.single()) === 'cargo';
+      const ld = M.prof(b.activity || M.single()); const who = ld ? M.L(ld.load.short) : tt('راكب', 'pax');
+      if (!isCargo && v.seats > 0 && v.seats < b.pax) reasons.push([`السعة ${v.seats} مقعد أقل من ${b.pax} ${who}`, `Capacity ${v.seats} is below ${b.pax} ${who}`]);
+      if (!isCargo && !(v.seats > 0)) reasons.push(['المركبة دي للبضائع ومافيهاش كراسي', 'This vehicle carries cargo and has no seats']);
+      if (isCargo && !((v.payloadKg || 0) > 0)) reasons.push(['المركبة دي مش للبضائع', 'This vehicle does not carry cargo']);
+      if (isCargo && b.loadKg && (v.payloadKg || 0) < b.loadKg) reasons.push([`الحمولة ${M.n0(v.payloadKg || 0)} كجم أقل من ${M.n0(b.loadKg)} كجم`, `Payload ${M.n0(v.payloadKg || 0)} kg is below ${M.n0(b.loadKg)} kg`]);
       if (v.status === 'maintenance') reasons.push(['المركبة في الصيانة', 'Vehicle is in the workshop']);
       if (v.status === 'stopped') reasons.push(['المركبة متوقفة', 'Vehicle is stopped']);
       // unified calendar (real local times, so a night trip from yesterday counts too); 30-minute gap
@@ -51,69 +57,107 @@
       const costKm = per.km ? (per.fuel + per.maintenance + per.oil) / per.km : (M.fuelPrice[v.fuel] || 0) / (vc.kmpl || 5);
       const branch = U.find('branches', v.branchId);
       const empty = branch && (branch.city === b.pickup || (b.pickup || '').startsWith(branch.city)) ? 8 : 60;
-      const estCost = (km + empty) * costKm + (per.driver + per.licIns + per.depreciation) / Math.max(1, per.opDays);
+      const estCost = (km + empty) * costKm + (per.driver + per.licIns + per.depreciation) / Math.max(1, per.opDays, Math.round(per.days * 0.6));
       const seatFit = v.seats > 0 ? 1 - Math.min(1, Math.max(0, v.seats - b.pax) / v.seats) : (b.loadKg && v.payloadKg ? 1 - Math.min(1, Math.max(0, v.payloadKg - b.loadKg) / v.payloadKg) : 0.5);
       const score = reasons.length ? 0 : Math.round(100 * (0.35 * seatFit + 0.25 * (1 - Math.min(1, estCost / Math.max(1, b.price || estCost * 2))) + 0.2 * (1 - per.util) + 0.2 * (empty < 20 ? 1 : 0.3)) - warns.length * 6);
       return { v, ok: !reasons.length, reasons, warns: warns.concat(drv ? drv.w : []), driver: drv ? drv.d : null, estCost, empty, score, km };
     }).sort((a, b) => (b.ok - a.ok) || (b.score - a.score));
   };
 
-  /* ================= BOOKINGS ================= */
+  /* ================= BOOKINGS =================
+     A booking has one activity (lib/profiles): a tourism booking carries passengers and a flight,
+     an education/staff/intercity booking a headcount (the daily runs come from Lines), a cargo
+     booking is a shipment (goods, weight, delivery code). A company with one activity never sees
+     the choice; one with several picks it first. */
+  const bkAct = b => b.activity || M.single() || 'tourism';
+  const unitsTitle = () => { const a = M.single(); return a ? M.L(M.prof(a).units) : tt('الحجوزات والشحنات', 'Bookings & shipments'); };
   U.route('bookings', () => {
-    const db = U.db();
+    const db = U.db(); const one = M.single(); const p = one ? M.prof(one) : null;
     const rows = db.bookings.slice().sort((a, b) => a.date < b.date ? 1 : -1);
     const upcoming = rows.filter(b => b.date >= M.TODAY && b.status !== 'cancelled');
-    return U.head(tt('الحجوزات', 'Bookings'), tt('حجز مستقل (استقبال مطار، يوم رحلة) أو جزء من برنامج سياحي.', 'Standalone bookings (airport transfer, day trip) or part of a tour program.'), U.btn(tt('حجز جديد', 'New booking'), 'new-booking', '', 'plus')) +
-      U.kpis([U.kpi(tt('حجوزات قادمة', 'Upcoming'), upcoming.length), U.kpi(tt('بدون مركبة', 'Unassigned'), `<span class="${db.bookings.some(b => b.unassigned) ? 'delta-down' : ''}">${db.bookings.filter(b => b.unassigned).length}</span>`), U.kpi(tt('مبدئي', 'Tentative'), db.bookings.filter(b => b.status === 'tentative').length), U.kpi(tt('نسبة الإلغاء', 'Cancellation rate'), M.pct(db.bookings.filter(b => b.status === 'cancelled').length / db.bookings.length))]) +
+    const cargoOnly = one === 'cargo', anyCargo = M.acts().includes('cargo');
+    const newLabel = one ? tt('جديد', 'New') + ' · ' + M.L(p.unit) : tt('جديد', 'New');
+    return U.head(unitsTitle(), p ? M.L(p.intro) : tt('كل حجز أو شحنة ليه نشاطه، والحقول بتتغير على حسبه.', 'Every booking or shipment has its activity, and its fields follow it.'), U.btn(newLabel, 'new-booking', '', 'plus')) +
+      U.kpis([U.kpi(tt('قادمة', 'Upcoming'), upcoming.length), U.kpi(tt('بدون مركبة', 'Unassigned'), `<span class="${db.bookings.some(b => b.unassigned) ? 'delta-down' : ''}">${db.bookings.filter(b => b.unassigned).length}</span>`), anyCargo ? U.kpi(tt('شحنات اتسلمت', 'Shipments delivered'), db.bookings.filter(b => b.deliveredAt).length) : U.kpi(tt('مبدئي', 'Tentative'), db.bookings.filter(b => b.status === 'tentative').length), U.kpi(tt('نسبة الإلغاء', 'Cancellation rate'), M.pct(db.bookings.filter(b => b.status === 'cancelled').length / Math.max(1, db.bookings.length)))]) +
       U.card(null, U.table({ id: 'bookings', rows, columns: [
-        { label: tt('رقم الحجز', 'Booking'), value: b => b.number, render: b => `<a href="#booking.${b.id}" class="cell-main">${b.number}</a>${b.programId ? `<div class="cell-sub">${tt('برنامج', 'Program')}</div>` : ''}` },
+        { label: cargoOnly ? tt('رقم الشحنة', 'Shipment') : tt('الرقم', 'Number'), value: b => b.number, render: b => `<a href="#booking.${b.id}" class="cell-main">${b.number}</a>${b.programId ? `<div class="cell-sub">${tt('برنامج', 'Program')}</div>` : ''}${b.lineId ? `<div class="cell-sub">${tt('خط', 'Line')} ${M.esc(U.find('lines', b.lineId).number || '')}</div>` : ''}${!one ? `<div class="cell-sub">${M.L(M.actName(bkAct(b)))}</div>` : ''}` },
         { label: tt('التاريخ', 'Date'), value: b => b.date + b.time, render: b => `${M.date(b.date)} <span class="num muted">${b.time}</span>` },
         { label: tt('العميل', 'Client'), value: b => M.L(U.find('clients', b.clientId).name), render: b => U.cLabel(U.find('clients', b.clientId)) },
+        { label: tt('النوع', 'Type'), value: b => M.L(M.typeName(b.tripType)) },
         { label: tt('المسار', 'Route'), value: b => U.routeTxt(b.pickup, b.destination) },
-        { label: tt('الركاب', 'Pax'), num: 1, value: b => b.pax }, { label: tt('النوع المطلوب', 'Vehicle type'), value: b => U.vtype(b.vehicleType) },
+        cargoOnly ? { label: tt('البضاعة', 'Goods'), value: b => b.goods || '' } : null,
+        { label: one ? M.L(p.load.label) : tt('الحمولة', 'Load'), num: 1, value: b => bkAct(b) === 'cargo' ? b.loadKg : b.pax, render: b => M.loadText(b, bkAct(b)) },
         { label: tt('السعر', 'Price'), num: 1, value: b => b.price, render: b => M.money(b.price) },
-        { label: tt('الحالة', 'Status'), value: b => b.status, render: b => U.status(b.status) + (b.unassigned ? ' ' + U.badge(tt('بدون مركبة', 'Unassigned'), 'danger') : '') },
-      ], filters: [{ label: tt('الحالة', 'Status'), get: b => b.status, options: ['tentative', 'confirmed', 'done', 'cancelled'].map(k => [k, U.statusText(k)]) }, { label: tt('التوزيع', 'Assignment'), get: b => b.unassigned ? 'u' : 'a', options: [['u', tt('بدون مركبة', 'Unassigned')], ['a', tt('مخصص', 'Assigned')]] }], onRow: b => 'booking.' + b.id }), { flush: true });
+        { label: tt('الحالة', 'Status'), value: b => b.status, render: b => U.status(b.status) + (b.unassigned && b.status !== 'cancelled' ? ' ' + U.badge(tt('بدون مركبة', 'Unassigned'), 'danger') : '') + (b.deliveredAt ? ' ' + U.badge(tt('اتسلمت', 'Delivered'), 'success') : '') },
+      ].filter(Boolean), filters: [{ label: tt('الحالة', 'Status'), get: b => b.status, options: ['tentative', 'confirmed', 'done', 'cancelled'].map(k => [k, U.statusText(k)]) }, { label: tt('التوزيع', 'Assignment'), get: b => b.unassigned ? 'u' : 'a', options: [['u', tt('بدون مركبة', 'Unassigned')], ['a', tt('مخصص', 'Assigned')]] }, !one ? { label: tt('النشاط', 'Activity'), get: b => bkAct(b), options: M.acts().map(a => [a, M.L(M.actName(a))]) } : null].filter(Boolean), onRow: b => 'booking.' + b.id }), { flush: true });
   });
 
-  U.act('new-booking', () => {
-    if (!U.guard()) return;
-    const db = U.db();
-    const pts = Object.keys(M.places);
-    if (!db.clients.length) { U.toast(tt('أضف عميل أولاً', 'Add a client first'), 'error'); location.hash = 'clients'; return; }
-    U.modal(tt('حجز جديد', 'New booking'), `${U.formHtml([
-      { f: 'clientId', label: tt('العميل', 'Client'), type: 'select', options: db.clients.filter(c => c.status === 'active').map(c => [c.id, M.L(c.name)]), req: true },
-      { f: 'date', label: tt('التاريخ', 'Date'), type: 'date', value: M.addDays(M.TODAY, 1), req: true, attrs: `min="${M.TODAY}"` },
-      { f: 'time', label: tt('ميعاد الاستلام', 'Pickup time'), type: 'time', value: '10:00', req: true },
-      { f: 'pax', label: tt('عدد الركاب', 'Passengers'), type: 'number', value: M.cargoTypes().length === M.usableTypes().length ? '' : 12, req: !M.cargoTypes().length, attrs: 'min="1" max="120"', help: M.cargoTypes().length ? tt('فاضي للبضائع', 'Leave empty for cargo') : '' },
-      M.cargoTypes().length ? { f: 'loadKg', label: tt('وزن الحمولة (كجم)', 'Load weight (kg)'), type: 'number', attrs: 'min="1"', help: tt('للبضائع بس', 'Cargo only') } : null,
-      { f: 'pickup', label: tt('مكان الاستلام', 'Pickup'), type: 'select', options: pts.map(k => [k, U.place(k)]), value: pts.includes('CAIAP') ? 'CAIAP' : pts[0], req: true },
-      { f: 'destination', label: tt('الوجهة', 'Destination'), type: 'select', options: pts.map(k => [k, U.place(k)]), value: pts.includes('CAI') ? 'CAI' : pts[0], req: true },
-      { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', options: M.usableTypes().map(k => [k, U.vtype(k)]), value: M.usableTypes().includes('MC') ? 'MC' : M.usableTypes()[0], req: true },
+  /* the booking form of one activity */
+  const bookingFields = act => {
+    const db = U.db(); const p = M.prof(act); const pts = M.placesFor(act); const types = M.typesFor(act);
+    const def = (list, ...want) => want.find(w => list.includes(w)) || list[0];
+    const flags = M.profiles.cargoFlags || {};
+    return [
+      M.multi() ? { f: 'activity', label: tt('النشاط', 'Activity'), type: 'select', value: act, options: M.acts().map(a => [a, M.L(M.actName(a))]), full: true } : null,
+      { f: 'clientId', label: tt('العميل', 'Client'), type: 'select', options: db.clients.filter(c => c.status === 'active' && (!M.multi() || M.clientTypesFor(act).includes(c.type))).map(c => [c.id, M.L(c.name)]), req: true },
+      { f: 'tripType', label: tt('نوع الرحلة', 'Trip type'), type: 'select', value: act === 'tourism' ? '' : p.defaultTripType, options: (act === 'tourism' ? [['', tt('حسب المسار', 'From the route')]] : []).concat(Object.entries(p.tripTypes).map(([k, n]) => [k, M.L(n)])) },
+      { f: 'date', label: act === 'cargo' ? tt('تاريخ التحميل', 'Loading date') : tt('التاريخ', 'Date'), type: 'date', value: M.addDays(M.TODAY, 1), req: true, attrs: `min="${M.TODAY}"` },
+      { f: 'time', label: act === 'cargo' ? tt('ميعاد التحميل', 'Loading time') : tt('ميعاد الاستلام', 'Pickup time'), type: 'time', value: act === 'cargo' ? '08:00' : '10:00', req: true },
+      act === 'cargo' ? { f: 'goods', label: tt('البضاعة', 'Goods'), req: true, attrs: 'placeholder="' + tt('مثلاً: أسمنت شكاير', 'e.g. bagged cement') + '"' } : null,
+      act === 'cargo' ? { f: 'loadKg', label: tt('الوزن (كجم)', 'Weight (kg)'), type: 'number', req: true, attrs: 'min="1"' } : { f: 'pax', label: M.L(p.load.label), type: 'number', value: act === 'tourism' ? 12 : '', req: true, attrs: 'min="1" max="1000"' },
+      act === 'cargo' ? { f: 'pieces', label: tt('عدد الطرود', 'Pieces'), type: 'number', attrs: 'min="1"' } : null,
+      act === 'cargo' ? { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', attrs: 'min="0.1" step="0.1"' } : null,
+      act === 'cargo' ? { f: 'deliverDate', label: tt('آخر موعد للتسليم (اختياري)', 'Deliver by (optional)'), type: 'date', attrs: `min="${M.TODAY}"` } : null,
+      act === 'cargo' ? { f: 'deliverTime', label: tt('الساعة', 'Time'), type: 'time' } : null,
+      { f: 'pickup', label: act === 'cargo' ? tt('مكان التحميل', 'Loading point') : tt('مكان الاستلام', 'Pickup'), type: 'select', options: pts.map(k => [k, U.place(k)]), value: def(pts, act === 'tourism' ? 'CAIAP' : act === 'cargo' ? 'RMD10' : 'CAI'), req: true },
+      { f: 'destination', label: act === 'cargo' ? tt('مكان التسليم', 'Delivery point') : tt('الوجهة', 'Destination'), type: 'select', options: pts.map(k => [k, U.place(k)]), value: def(pts, act === 'cargo' ? 'ALXPT' : 'CAI'), req: true },
+      { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', options: types.map(k => [k, U.vtype(k)]), value: def(types, act === 'cargo' ? 'TM' : 'MC'), req: true },
       { f: 'price', label: tt('السعر المتفق عليه', 'Agreed price'), type: 'number', req: true, attrs: 'min="0"', help: `<a href="#pricing" data-act="close-overlay">${tt('احسب السعر بالتسعير الذكي', 'Calculate with smart pricing')}</a>` },
-      M.has('tourism') ? { f: 'flight', label: tt('رقم الطيران (اختياري)', 'Flight number (optional)'), attrs: 'placeholder="MS985" dir="ltr"' } : null,
+      act === 'tourism' ? { f: 'flight', label: tt('رقم الطيران (اختياري)', 'Flight number (optional)'), attrs: 'placeholder="MS985" dir="ltr"' } : null,
+      act === 'cargo' ? { f: 'flags', label: tt('طبيعة البضاعة', 'Handling'), type: 'html', full: true, html: `<div class="check-row">${Object.entries(flags).map(([k, n]) => `<label class="check"><input type="checkbox" data-f="flag_${k}"> ${M.L(n)}</label>`).join('')}</div>` } : null,
       { f: 'status', label: tt('الحالة', 'Status'), type: 'select', options: [['confirmed', U.statusText('confirmed')], ['tentative', U.statusText('tentative')]] },
       { f: 'notes', label: tt('ملاحظات', 'Notes'), type: 'textarea', full: true },
       ['super_admin', 'company_admin', 'fleet_manager', 'accountant'].includes(M.state.role) ? { f: 'overrideCredit', label: tt('اعتماد تجاوز حد الائتمان لو لزم', 'Approve exceeding the credit limit if needed'), type: 'checkbox', full: true } : null,
-    ], 'bk')}<h3 style="font-size:15px;margin:16px 0 8px">${tt('مركبات متاحة مقترحة', 'Suggested available vehicles')}</h3><div id="bk-sugg"></div>`, `<button class="btn secondary" data-act="close-overlay">${tt('إلغاء', 'Cancel')}</button><button class="btn" data-act="save-booking">${tt('حفظ الحجز', 'Save booking')}</button>`);
+    ];
+  };
+  U.act('new-booking', el => {
+    if (!U.guard()) return;
+    const db = U.db();
+    if (!db.clients.length) { U.toast(tt('أضف عميل أولاً', 'Add a client first'), 'error'); location.hash = 'clients'; return; }
+    const act = (el && el.dataset && el.dataset.a) || U._bkAct || M.single() || M.acts()[0] || 'tourism';
+    U._bkAct = act;
+    const p = M.prof(act);
+    const intro = p.lines ? `<p class="muted small">${tt('الرحلات اليومية المتكررة بتتعمل من "الخطوط". هنا رحلة إضافية لمرة واحدة.', 'Daily recurring runs come from "Lines". This is a one-off trip.')}</p>` : act === 'cargo' ? `<p class="muted small">${tt('بعد الحفظ بيظهر كود التسليم مرة واحدة: ابعته للعميل الشاحن عشان يديه للمستلم. السواق ما يقفلش التسليم غير بالكود.', 'After saving, the delivery code is shown once: send it to the shipper to give to the consignee. The driver closes the delivery only with it.')}</p>` : '';
+    U.modal(tt('جديد', 'New') + ' · ' + M.L(p.unit) + (M.multi() ? ` · ${M.L(M.actName(act))}` : ''), `${intro}${U.formHtml(bookingFields(act), 'bk')}<h3 style="font-size:15px;margin:16px 0 8px">${tt('مركبات متاحة مقترحة', 'Suggested available vehicles')}</h3><div id="bk-sugg"></div>`, `<button class="btn secondary" data-act="close-overlay">${tt('إلغاء', 'Cancel')}</button><button class="btn" data-act="save-booking">${tt('حفظ', 'Save')}</button>`);
     const g = f => document.querySelector(`#bk [data-f="${f}"]`);
+    // an empty return has no goods, weight or deadline
+    if (act === 'cargo' && g('tripType')) { const tog = () => { const e = g('tripType').value === 'empty_return'; ['goods', 'loadKg', 'pieces', 'volumeM3', 'deliverDate', 'deliverTime'].forEach(k => { if (g(k)) g(k).closest('.field').hidden = e; }); const fl = document.querySelector('#bk [data-f^="flag_"]'); if (fl) fl.closest('.field').hidden = e; }; g('tripType').addEventListener('change', tog); tog(); }
+    if (g('activity')) g('activity').addEventListener('change', () => { U._bkAct = g('activity').value; U.closeOverlays(); U.acts['new-booking']({ dataset: { a: U._bkAct } }); });
     const upd = () => {
-      const b = { pax: +g('pax').value || 1, loadKg: g('loadKg') ? +g('loadKg').value || null : null, date: g('date').value, time: g('time').value || '10:00', pickup: g('pickup').value, destination: g('destination').value, vehicleType: g('vehicleType').value, price: +g('price').value };
+      const b = { activity: act, pax: act === 'cargo' ? 1 : +g('pax').value || 1, loadKg: g('loadKg') ? +g('loadKg').value || null : null, date: g('date').value, time: g('time').value || '10:00', pickup: g('pickup').value, destination: g('destination').value, vehicleType: g('vehicleType').value, price: +g('price').value };
       const c = U.candidates(b).slice(0, 5);
-      document.getElementById('bk-sugg').innerHTML = `<label class="list-row" style="cursor:pointer"><input type="radio" name="bk-veh" value="" style="accent-color:#08264A"><div class="grow"><div class="t">${tt('بدون تخصيص الآن', 'Don’t assign now')}</div><div class="s">${tt('يظهر في لوحة التوزيع', 'It will show on the dispatch board')}</div></div></label>` + c.map((x, i) => `<label class="list-row" style="cursor:${x.ok ? 'pointer' : 'default'}"><input type="radio" name="bk-veh" value="${x.v.id}" data-d="${x.driver ? x.driver.id : ''}" ${x.ok ? '' : 'disabled'} ${i === 0 && x.ok ? 'checked' : ''} style="accent-color:#08264A"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${U.capacity(x.v)}</div><div class="s">${x.ok ? `${tt('السائق', 'Driver')}: ${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? U.badge(tt('متاحة', 'Available'), 'success') : U.badge(tt('غير متاحة', 'Unavailable'), 'danger')}</label>`).join('');
+      document.getElementById('bk-sugg').innerHTML = `<label class="list-row" style="cursor:pointer"><input type="radio" name="bk-veh" value="" style="accent-color:#08264A"><div class="grow"><div class="t">${tt('بدون تخصيص الآن', 'Don’t assign now')}</div><div class="s">${tt('يظهر في لوحة التوزيع', 'It will show on the dispatch board')}</div></div></label>` + c.map((x, i) => `<label class="list-row" style="cursor:${x.ok ? 'pointer' : 'default'}"><input type="radio" name="bk-veh" value="${x.v.id}" data-d="${x.driver ? x.driver.id : ''}" ${x.ok ? '' : 'disabled'} ${i === 0 && x.ok ? 'checked' : ''} style="accent-color:#08264A"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${U.capacity(x.v, act)}</div><div class="s">${x.ok ? `${tt('السائق', 'Driver')}: ${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? U.badge(tt('متاحة', 'Available'), 'success') : U.badge(tt('غير متاحة', 'Unavailable'), 'danger')}</label>`).join('');
       if (!document.querySelector('input[name="bk-veh"]:checked')) document.querySelector('input[name="bk-veh"]').checked = true;
     };
     ['pax', 'loadKg', 'date', 'time', 'pickup', 'destination', 'vehicleType'].forEach(i => g(i) && g(i).addEventListener('change', upd)); upd();
   });
   U.act('save-booking', () => {
-    const d = U.readForm('bk');
-    const needPax = ((M.vehicleClasses[d.vehicleType] || {}).seats || 0) > 0;
-    const missing = ['clientId', 'date', 'time', needPax ? 'pax' : null, 'price'].filter(k => k && (d[k] == null || d[k] === ''));
+    const d = U.readForm('bk'); const act = U._bkAct || M.single();
+    d.activity = act;
+    const empty = act === 'cargo' && d.tripType === 'empty_return';
+    if (empty) ['loadKg', 'goods', 'pieces', 'volumeM3', 'deliverDate', 'deliverTime'].forEach(k => delete d[k]);
+    const missing = ['clientId', 'date', 'time', empty ? null : act === 'cargo' ? 'loadKg' : 'pax', act === 'cargo' && !empty ? 'goods' : null, 'price'].filter(k => k && (d[k] == null || d[k] === ''));
     if (missing.length) { U.showError({ field: missing[0], msg: { ar: 'هذا الحقل مطلوب', en: 'This field is required' } }); return; }
+    d.cargoFlags = Object.keys(d).filter(k => k.startsWith('flag_') && d[k]).map(k => k.slice(5));
+    Object.keys(d).forEach(k => { if (k.startsWith('flag_')) delete d[k]; });
+    if (!d.tripType) delete d.tripType;
     const sel = document.querySelector('input[name="bk-veh"]:checked');
     if (sel && sel.value) { d.vehicleId = sel.value; if (sel.dataset.d) d.driverId = sel.dataset.d; }
-    U.run('booking.create', d, { ok: r => tt('تم حفظ الحجز ', 'Booking saved ') + r.number + (r.trip ? ' · ' + r.trip.number : ''), after: r => { location.hash = 'booking.' + r.id; U.full(); } });
+    U.run('booking.create', d, { ok: r => tt('تم الحفظ ', 'Saved ') + r.number + (r.trip ? ' · ' + r.trip.number : ''), after: r => { location.hash = 'booking.' + r.id; U.full(); if (r.deliveryCode) U.deliveryCode(r.number, r.deliveryCode); } });
   });
+  /* the delivery code is shown once: the shipper gives it to the consignee */
+  U.deliveryCode = (number, code) => U.secret(tt('كود التسليم', 'Delivery code') + ' · ' + number, [[tt('الكود', 'Code'), code]], tt('ابعت الكود للعميل الشاحن (أو لنظامه / Sabeel Naql) عشان يديه للمستلم. السواق بيكتبه عند التسليم، ومش هيظهر هنا تاني.', 'Send the code to the shipper (or its system / Sabeel Naql) to give to the consignee. The driver enters it on delivery; it will not be shown here again.'));
+  U.act('ship-newcode', el => U.confirm(tt('كود تسليم جديد', 'New delivery code'), tt('الكود القديم هيبطل، والجديد هيظهر مرة واحدة.', 'The old code stops working; the new one is shown once.'), async () => { const r = await U.run('shipment.newCode', { id: el.dataset.id }, { after: () => { } }); if (r) U.deliveryCode(r.number, r.deliveryCode); }));
 
   /* create trip(s) for a booking on a vehicle */
   /* assignment is done by the server (booking.assign), which re-checks every hard rule */
@@ -121,43 +165,64 @@
 
   U.route('booking', id => {
     const db = U.db(); const b = db.bookings.find(x => x.id === id);
-    if (!b) return U.empty('ticket', tt('الحجز غير موجود في هذه الشركة', 'Booking not found in this company'));
+    if (!b) return U.empty('ticket', tt('غير موجود في هذه الشركة', 'Not found in this company'));
+    const act = bkAct(b), p = M.prof(act) || M.prof(M.acts()[0]);
     const cl = U.find('clients', b.clientId); const trips = db.trips.filter(t => t.bookingId === b.id);
     const prog = b.programId ? U.find('programs', b.programId) : null;
+    const line = b.lineId ? U.find('lines', b.lineId) : null;
     const inv = trips.map(t => t.invoiceId).filter(Boolean); const invs = [...new Set(inv)].map(i => U.find('invoices', i));
     const canOps = ['super_admin', 'company_admin', 'fleet_manager', 'operations'].includes(M.state.role), canFin = ['super_admin', 'company_admin', 'fleet_manager', 'accountant'].includes(M.state.role);
     const invoiced = db.invoices.some(i => i.status !== 'cancelled' && i.lines.some(l => l.bookingId === b.id || trips.some(t => t.id === l.tripId)));
-    const acts = `${U.status(b.status)} ${canOps && b.unassigned && !b.programId && b.status !== 'cancelled' ? U.btn(tt('تحويل لرحلة وتخصيص مركبة', 'Convert to trip & assign'), 'convert-booking', '', 'arrow', `data-id="${b.id}"`) + U.btn(tt('إسناد لمورد', 'Subcontract'), 'sub-new', 'secondary', 'truck', `data-b="${b.id}"`) : ''} ${canOps && ['tentative', 'confirmed'].includes(b.status) && !b.programId ? U.btn(tt('تعديل', 'Edit'), 'bk-edit', 'secondary', 'settings', `data-id="${b.id}"`) : ''} ${canFin && !b.programId && b.status !== 'cancelled' && !invoiced && (b.status === 'done' || trips.some(t => t.status === 'completed')) ? U.btn(tt('إصدار فاتورة', 'Invoice booking'), 'inv-booking', 'secondary', 'file', `data-id="${b.id}"`) : ''} ${canFin && b.status !== 'cancelled' ? U.btn(tt('دفعة مقدمة', 'Advance payment'), 'pay-advance', 'ghost', 'wallet', `data-id="${b.id}"`) : ''} ${canOps && !['cancelled', 'done'].includes(b.status) ? U.btn(tt('إلغاء الحجز', 'Cancel booking'), 'cancel-booking', 'danger', '', `data-id="${b.id}"`) : ''}`;
-    return U.head(b.number, `${U.routeTxt(b.pickup, b.destination)} · ${M.date(b.date)} ${b.time}`, acts, [[tt('الحجوزات', 'Bookings'), 'bookings'], [b.number]]) +
-      U.card(tt('السلسلة', 'Chain'), chain(cl, prog, b, trips[0], invs[0])) + '<div style="height:16px"></div>' +
-      `<div class="cols-2">` + U.card(tt('بيانات الحجز', 'Booking details'), U.dl([[tt('العميل', 'Client'), U.cLabel(cl)], [tt('البرنامج', 'Program'), prog ? `<a href="#program.${prog.id}">${prog.number} · ${M.L(prog.name)}</a>` : '—'], [tt('الركاب', 'Passengers'), b.pax], [tt('النوع المطلوب', 'Vehicle type'), U.vtype(b.vehicleType)], [tt('السعر المتفق', 'Agreed price'), M.money(b.price)], [tt('دفعة مقدمة', 'Advance paid'), M.money(b.paid)], [tt('رقم الطيران', 'Flight'), M.esc(b.flight || '—')], [tt('ملاحظات', 'Notes'), M.esc(b.notes || '—')], [tt('تاريخ الإنشاء', 'Created'), M.date(b.createdAt)], [tt('سبب الإلغاء', 'Cancellation reason'), b.cancelReason ? M.esc(tt(b.cancelReason[0], b.cancelReason[1])) : '—']])) +
-      U.card(tt('الرحلات المرتبطة', 'Linked trips'), trips.length ? trips.map(t => `<div class="list-row"><div class="grow"><div class="t"><a href="#trip.${t.id}">${t.number}</a> · ${M.date(t.date)}</div><div class="s">${U.routeTxt(t.from, t.to)} · ${M.esc(U.find('vehicles', t.vehicleId).code)} · ${M.esc(M.L(U.find('drivers', t.driverId).name))}</div></div>${U.status(t.status)}</div>`).join('') : U.empty('bus', tt('لم يتم التحويل لرحلة بعد', 'Not converted to a trip yet'), tt('حوّل الحجز لرحلة واختر المركبة المتاحة.', 'Convert the booking and pick an available vehicle.'))) + `</div>`;
+    const cargo = act === 'cargo';
+    const acts = `${U.status(b.status)} ${canOps && b.unassigned && !b.programId && b.status !== 'cancelled' ? U.btn(tt('تحويل لرحلة وتخصيص مركبة', 'Convert to trip & assign'), 'convert-booking', '', 'arrow', `data-id="${b.id}"`) + U.btn(tt('إسناد لمورد', 'Subcontract'), 'sub-new', 'secondary', 'truck', `data-b="${b.id}"`) : ''} ${canOps && cargo && b.hasCode && !b.deliveredAt && b.status !== 'cancelled' ? U.btn(tt('كود تسليم جديد', 'New delivery code'), 'ship-newcode', 'secondary', 'key', `data-id="${b.id}"`) : ''} ${canOps && ['tentative', 'confirmed'].includes(b.status) && !b.programId ? U.btn(tt('تعديل', 'Edit'), 'bk-edit', 'secondary', 'settings', `data-id="${b.id}"`) : ''} ${canFin && !b.programId && b.status !== 'cancelled' && !invoiced && (b.status === 'done' || trips.some(t => t.status === 'completed')) ? U.btn(tt('إصدار فاتورة', 'Invoice'), 'inv-booking', 'secondary', 'file', `data-id="${b.id}"`) : ''} ${canFin && b.status !== 'cancelled' ? U.btn(tt('دفعة مقدمة', 'Advance payment'), 'pay-advance', 'ghost', 'wallet', `data-id="${b.id}"`) : ''} ${canOps && !['cancelled', 'done'].includes(b.status) ? U.btn(tt('إلغاء', 'Cancel'), 'cancel-booking', 'danger', '', `data-id="${b.id}"`) : ''}`;
+    const details = [[tt('العميل', 'Client'), U.cLabel(cl)], M.multi() ? [tt('النشاط', 'Activity'), M.L(M.actName(act))] : null, [tt('نوع الرحلة', 'Trip type'), M.L(M.typeName(b.tripType))],
+      act === 'tourism' ? [tt('البرنامج', 'Program'), prog ? `<a href="#program.${prog.id}">${prog.number} · ${M.L(prog.name)}</a>` : '—'] : null,
+      line ? [tt('الخط', 'Line'), `<a href="#line.${line.id}">${line.number} · ${M.esc(M.L(line.name))}</a>`] : null,
+      cargo ? [tt('البضاعة', 'Goods'), M.esc(b.goods || '—') + ((b.cargoFlags || []).length ? ' · ' + b.cargoFlags.map(f => U.badge(M.L((M.profiles.cargoFlags || {})[f] || { ar: f, en: f }), 'warning')).join(' ') : '')] : null,
+      [M.L(p.load.label), M.loadText(b, act)],
+      cargo ? [tt('الطرود / الحجم', 'Pieces / volume'), `${b.pieces || '—'} · ${b.volumeM3 ? M.n1(b.volumeM3) + ' ' + tt('م³', 'm³') : '—'}`] : null,
+      cargo ? [tt('آخر موعد للتسليم', 'Deliver by'), U.deadline(b)] : null,
+      [tt('النوع المطلوب', 'Vehicle type'), U.vtype(b.vehicleType)], [tt('السعر المتفق', 'Agreed price'), M.money(b.price)], [tt('دفعة مقدمة', 'Advance paid'), M.money(b.paid)],
+      act === 'tourism' ? [tt('رقم الطيران', 'Flight'), M.esc(b.flight || '—')] : null,
+      cargo ? [tt('التسليم', 'Delivery'), b.deliveredAt ? `${U.badge(tt('اتسلمت', 'Delivered'), 'success')} <span class="muted small">${M.esc(b.deliveredAt)} · ${M.esc(b.deliveredBy || '')}</span>` : b.codeLocked ? U.badge(tt('الكود اتقفل بعد 5 محاولات غلط — اعمل كود جديد', 'Code locked after 5 wrong tries — issue a new one'), 'danger') : b.hasCode ? U.badge(tt('في انتظار كود المستلم', 'Waiting for the consignee code'), 'warning') : '—'] : null,
+      [tt('ملاحظات', 'Notes'), M.esc(b.notes || '—')], [tt('تاريخ الإنشاء', 'Created'), M.date(b.createdAt)], [tt('سبب الإلغاء', 'Cancellation reason'), b.cancelReason ? M.esc(tt(b.cancelReason[0], b.cancelReason[1])) : '—']];
+    return U.head(b.number, `${U.routeTxt(b.pickup, b.destination)} · ${M.date(b.date)} ${b.time}`, acts, [[unitsTitle(), 'bookings'], [b.number]]) +
+      U.card(tt('السلسلة', 'Chain'), chain(cl, prog, b, trips[0], invs[0], act, line)) + '<div style="height:16px"></div>' +
+      `<div class="cols-2">` + U.card(cargo ? tt('بيانات الشحنة', 'Shipment details') : tt('البيانات', 'Details'), U.dl(details)) +
+      U.card(tt('الرحلات المرتبطة', 'Linked trips'), trips.length ? trips.map(t => `<div class="list-row"><div class="grow"><div class="t"><a href="#trip.${t.id}">${t.number}</a> · ${M.date(t.date)}</div><div class="s">${U.routeTxt(t.from, t.to)} · ${M.esc(U.find('vehicles', t.vehicleId).code)} · ${M.esc(M.L(U.find('drivers', t.driverId).name))}</div></div>${U.status(t.status)}</div>`).join('') : U.empty('bus', tt('لم يتم التحويل لرحلة بعد', 'Not converted to a trip yet'), tt('حوّل لرحلة واختر المركبة المتاحة.', 'Convert it and pick an available vehicle.'))) + `</div>`;
   });
   U.act('convert-booking', el => {
     if (!U.guard()) return;
     const b = U.find('bookings', el.dataset.id); const c = U.candidates(b);
-    U.modal(tt('تحويل لرحلة', 'Convert to trip'), `<p class="muted small">${tt('المركبات مرتبة حسب الأنسب. المركبات المتعارضة أو في الصيانة أو بسعة أقل مقفولة. السيرفر يعيد التحقق عند الحفظ.', 'Vehicles are ranked by fit. Ones that clash, are in the workshop or are too small are blocked. The server re-checks on save.')}</p>${c.slice(0, 10).map(x => `<div class="list-row"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${U.capacity(x.v)}</div><div class="s">${x.ok ? `${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? `<button class="btn sm" data-act="do-assign" data-b="${b.id}" data-v="${x.v.id}" data-d="${x.driver.id}">${tt('تخصيص', 'Assign')}</button>` : U.badge(tt('غير متاحة', 'Blocked'), 'danger')}</div>`).join('') || U.empty('car', tt('لا توجد مركبات', 'No vehicles'))}`);
+    U.modal(tt('تحويل لرحلة', 'Convert to trip'), `<p class="muted small">${tt('المركبات مرتبة حسب الأنسب. المركبات المتعارضة أو في الصيانة أو بسعة أقل مقفولة. السيرفر يعيد التحقق عند الحفظ.', 'Vehicles are ranked by fit. Ones that clash, are in the workshop or are too small are blocked. The server re-checks on save.')}</p>${c.slice(0, 10).map(x => `<div class="list-row"><div class="grow"><div class="t">${M.esc(x.v.code)} · ${U.vtype(x.v.type)} · ${U.capacity(x.v, bkAct(b))}</div><div class="s">${x.ok ? `${M.esc(M.L(x.driver.name))} · ${tt('تكلفة تقديرية', 'Est. cost')} ${M.money(x.estCost)}` : x.reasons.map(r => tt(r[0], r[1])).join(' · ')}${x.warns.length ? ' · ' + x.warns.map(r => tt(r[0], r[1])).join(' · ') : ''}</div></div>${x.ok ? `<button class="btn sm" data-act="do-assign" data-b="${b.id}" data-v="${x.v.id}" data-d="${x.driver.id}">${tt('تخصيص', 'Assign')}</button>` : U.badge(tt('غير متاحة', 'Blocked'), 'danger')}</div>`).join('') || U.empty('car', tt('لا توجد مركبات', 'No vehicles'))}`);
   });
   U.act('do-assign', el => U.run('booking.assign', { bookingId: el.dataset.b, vehicleId: el.dataset.v, driverId: el.dataset.d || undefined }, { ok: r => tt(`تم إنشاء الرحلة ${r.number}`, `Trip ${r.number} created`) }));
-  U.act('cancel-booking', el => U.confirm(tt('إلغاء الحجز', 'Cancel booking'), tt('الحجز والرحلات المجدولة عليه هيتلغوا.', 'The booking and its scheduled trips will be cancelled.'), r => U.run('booking.cancel', { id: el.dataset.id, reason: r }, { ok: tt('تم إلغاء الحجز', 'Booking cancelled') }), { reason: true, danger: true, ok: tt('تأكيد الإلغاء', 'Confirm cancellation') }));
+  U.act('cancel-booking', el => U.confirm(tt('إلغاء', 'Cancel'), tt('الحجز والرحلات المجدولة عليه هيتلغوا.', 'It and its scheduled trips will be cancelled.'), r => U.run('booking.cancel', { id: el.dataset.id, reason: r }, { ok: tt('تم الإلغاء', 'Cancelled') }), { reason: true, danger: true, ok: tt('تأكيد الإلغاء', 'Confirm cancellation') }));
   U.act('bk-edit', el => {
-    const b = U.find('bookings', el.dataset.id); const assigned = !b.unassigned;
-    U.formModal(tt('تعديل الحجز', 'Edit booking'), [
+    const b = U.find('bookings', el.dataset.id); const assigned = !b.unassigned; const act = bkAct(b); const p = M.prof(act);
+    U.formModal(tt('تعديل', 'Edit') + ' · ' + b.number, [
       assigned ? null : { f: 'date', label: tt('التاريخ', 'Date'), type: 'date', value: b.date },
-      assigned ? null : { f: 'time', label: tt('ميعاد الاستلام', 'Pickup time'), type: 'time', value: b.time },
-      assigned ? null : { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', value: b.vehicleType, options: [...new Set([b.vehicleType, ...M.usableTypes()])].map(k => [k, U.vtype(k)]) },
-      { f: 'pax', label: tt('عدد الركاب', 'Passengers'), type: 'number', value: b.pax, attrs: 'min="1"' },
+      assigned ? null : { f: 'time', label: tt('الميعاد', 'Time'), type: 'time', value: b.time },
+      assigned ? null : { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', value: b.vehicleType, options: [...new Set([b.vehicleType, ...M.typesFor(act)])].map(k => [k, U.vtype(k)]) },
+      act === 'cargo' ? null : { f: 'pax', label: M.L(p.load.label), type: 'number', value: b.pax, attrs: 'min="1"' },
+      ...(act === 'cargo' && !b.deliveredAt ? [{ f: 'goods', label: tt('البضاعة', 'Goods'), value: b.goods, req: true }, { f: 'loadKg', label: tt('الوزن (كجم)', 'Weight (kg)'), type: 'number', value: b.loadKg, attrs: 'min="1"' },
+        { f: 'pieces', label: tt('عدد الطرود', 'Pieces'), type: 'number', value: b.pieces || '', attrs: 'min="1"' }, { f: 'volumeM3', label: tt('الحجم (م³)', 'Volume (m³)'), type: 'number', value: b.volumeM3 || '', attrs: 'min="0.1" step="0.1"' },
+        { f: 'deliverDate', label: tt('آخر موعد للتسليم', 'Deliver by'), type: 'date', value: b.deliverDate || '' }, { f: 'deliverTime', label: tt('الساعة', 'Time'), type: 'time', value: b.deliverTime || '' }] : []),
       { f: 'price', label: tt('السعر المتفق عليه', 'Agreed price'), type: 'number', value: b.price, attrs: 'min="0"' },
       { f: 'status', label: tt('الحالة', 'Status'), type: 'select', value: b.status, options: [['confirmed', U.statusText('confirmed')], ['tentative', U.statusText('tentative')]] },
-      M.has('tourism') ? { f: 'flight', label: tt('رقم الطيران', 'Flight'), value: b.flight } : null, { f: 'notes', label: tt('ملاحظات', 'Notes'), type: 'textarea', value: b.notes, full: true },
-    ], 'booking.update', { intro: assigned ? `<p class="muted small">${tt('الحجز متخصص له رحلة؛ لتغيير الموعد أو النوع ألغِ التخصيص من صفحة الرحلة.', 'The booking has a trip; to change the date, time or type, unassign it from the trip page.')}</p>` : '', map: d => Object.assign(d, { id: b.id }) });
+      act === 'tourism' ? { f: 'flight', label: tt('رقم الطيران', 'Flight'), value: b.flight } : null, { f: 'notes', label: tt('ملاحظات', 'Notes'), type: 'textarea', value: b.notes, full: true },
+    ], 'booking.update', { intro: assigned ? `<p class="muted small">${tt('متخصص له رحلة؛ لتغيير الموعد أو النوع ألغِ التخصيص من صفحة الرحلة.', 'It has a trip; to change the date, time or type, unassign it from the trip page.')}</p>` : '', map: d => { ['pieces', 'volumeM3', 'deliverDate', 'deliverTime'].forEach(k => { if (d[k] === '') d[k] = null; }); return Object.assign(d, { id: b.id }); } });
   });
 
-  function chain(cl, prog, b, t, inv) {
+  function chain(cl, prog, b, t, inv, act, line) {
     const node = (lbl, html) => `<div class="node"><small>${lbl}</small>${html || '—'}</div>`;
     const ar = `<span class="arrow">${U.icon('arrow', 'flip')}</span>`.replace('<svg class="flip"', '<svg class="flip" style="width:16px;height:16px"');
-    return `<div class="chain">${node(tt('العميل', 'Client'), cl ? U.cLabel(cl) : '')}${ar}${node(tt('البرنامج', 'Program'), prog ? `<a href="#program.${prog.id}">${prog.number}</a>` : `<span class="muted">${tt('حجز مستقل', 'Standalone')}</span>`)}${ar}${node(tt('الحجز', 'Booking'), b ? `<a href="#booking.${b.id}">${b.number}</a>` : '')}${ar}${node(tt('الرحلة', 'Trip'), t ? `<a href="#trip.${t.id}">${t.number}</a>` : '')}${ar}${node(tt('الفاتورة', 'Invoice'), inv ? `<a href="#invoice.${inv.id}">${inv.number}</a>` : `<span class="muted">${tt('لم تُفوتر', 'Not invoiced')}</span>`)}</div>`;
+    // the middle step is the activity's own: program (tourism), line (schools, staff, intercity), none (cargo)
+    const mid = act === 'tourism' ? ar + node(tt('البرنامج', 'Program'), prog ? `<a href="#program.${prog.id}">${prog.number}</a>` : `<span class="muted">${tt('حجز مستقل', 'Standalone')}</span>`)
+      : line ? ar + node(tt('الخط', 'Line'), `<a href="#line.${line.id}">${line.number}</a>`) : '';
+    return `<div class="chain">${node(tt('العميل', 'Client'), cl ? U.cLabel(cl) : '')}${mid}${ar}${node(act === 'cargo' ? tt('الشحنة', 'Shipment') : tt('الحجز', 'Booking'), b ? `<a href="#booking.${b.id}">${b.number}</a>` : '')}${ar}${node(tt('الرحلة', 'Trip'), t ? `<a href="#trip.${t.id}">${t.number}</a>` : '')}${ar}${node(tt('الفاتورة', 'Invoice'), inv ? `<a href="#invoice.${inv.id}">${inv.number}</a>` : `<span class="muted">${tt('لم تُفوتر', 'Not invoiced')}</span>`)}</div>`;
   }
+
   U.chainHtml = chain;
 
   /* ================= PROGRAMS ================= */
@@ -198,6 +263,21 @@
 
   /* ================= TRIPS ================= */
   /* ================= DRIVER: MY TRIPS (driver accounts see only their own trips) ================= */
+  /* the driver's view of the load: headcount and stops, or the shipment (goods, weight, handling) */
+  /* a shipment's deadline, and whether it was (or is being) missed */
+  U.deadline = b => {
+    if (!b.deliverDate) return '—';
+    const due = b.deliverDate + ' ' + (b.deliverTime || '23:59');
+    const txt = `${M.date(b.deliverDate)}${b.deliverTime ? ' ' + b.deliverTime : ''}`;
+    const late = b.deliveredAt ? b.deliveredAt > due : (M.nowLocal() > due && b.status !== 'cancelled');
+    return txt + (late ? ' ' + U.badge(b.deliveredAt ? tt('اتسلمت متأخر', 'Delivered late') : tt('متأخرة', 'Late'), 'danger') : '');
+  };
+  const myLoad = t => t.activity === 'cargo' ? M.loadText(U.find('bookings', t.bookingId), 'cargo') : M.loadText(t);
+  const myExtra = t => {
+    if (t.activity === 'cargo') { const b = U.find('bookings', t.bookingId); return `<div class="muted small">${b.deliverDate ? tt('التسليم قبل', 'Deliver by') + ' ' + U.deadline(b) + ' · ' : ''}${M.esc(b.goods || '')}${b.pieces ? ` · ${b.pieces} ${tt('طرد', 'pieces')}` : ''}${(b.cargoFlags || []).map(f => ' · ' + M.L((M.profiles.cargoFlags || {})[f] || { ar: f, en: f })).join('')}${b.deliveredAt ? ' · ' + U.badge(tt('اتسلمت', 'Delivered'), 'success') : b.hasCode ? ' · ' + tt('التسليم بكود المستلم', 'Delivery with the consignee code') : ''}</div>`; }
+    const l = t.lineId ? U.find('lines', t.lineId) : null;
+    return l && l.stops && l.stops.length ? `<div class="muted small">${tt('المحطات', 'Stops')}: ${(t.lineLeg === 'return' ? [...l.stops].reverse() : l.stops).map(U.place).map(M.esc).join(' ← ')}</div>` : '';
+  };
   U.route('mytrips', () => {
     const db = U.db(), today = M.TODAY;
     const veh = id => db.vehicles.find(v => v.id === id);
@@ -207,7 +287,7 @@
       const act = t.status === 'scheduled' ? U.btn(tt('ابدأ الرحلة', 'Start trip'), 'my-start', '', 'arrow', `data-id="${t.id}"`) : t.status === 'running' ? U.btn(tt('إنهاء الرحلة', 'Finish trip'), 'my-finish', '', 'check', `data-id="${t.id}"`) : '';
       return U.card(null, `<div class="my-trip"><div><div class="muted small">${M.esc(t.number)} · ${M.date(t.date)} · <span class="num">${t.startTime}–${t.endTime}</span>${t.endsAt && t.endsAt.slice(0, 10) !== t.date ? ' ' + U.badge(tt('بتخلص اليوم التالي', 'ends next day'), 'warning') : ''}</div>
         <div class="route">${M.esc(U.place(t.from))} ← ${M.esc(U.place(t.to))}</div>
-        <div class="muted small">${v ? `${M.esc(v.code)} · <span class="ltr">${M.esc(M.L(v.plate))}</span>` : ''}${t.pax ? ` · ${t.pax} ${tt('راكب', 'pax')}` : ''}</div></div>
+        <div class="muted small">${v ? `${M.esc(v.code)} · <span class="ltr">${M.esc(M.L(v.plate))}</span>` : ''} · ${M.esc(M.L(M.typeName(t.type)))} · ${myLoad(t)}</div>${myExtra(t)}</div>
         <div class="actions">${U.status(t.status)} ${act}</div></div>`);
     };
     const name = db.drivers[0] ? M.L(db.drivers[0].name) : '';
@@ -216,9 +296,10 @@
   });
   U.act('my-start', el => { const t = U.find('trips', el.dataset.id); const v = U.db().vehicles.find(x => x.id === t.vehicleId);
     U.formModal(tt('بدء الرحلة', 'Start trip') + ' · ' + t.number, [{ f: 'odometer', label: tt('عداد البداية (كم)', 'Start odometer (km)'), type: 'number', value: v ? v.odometer : '', req: true }], 'me.tripStart', { map: x => ({ id: t.id, odometer: Number(x.odometer) }), ok: tt('بدأت الرحلة', 'Trip started') }); });
-  U.act('my-finish', el => { const t = U.find('trips', el.dataset.id);
-    U.formModal(tt('إنهاء الرحلة', 'Finish trip') + ' · ' + t.number, [{ f: 'endKm', label: tt('عداد النهاية (كم)', 'End odometer (km)'), type: 'number', req: true }, { f: 'tolls', label: tt('رسوم طرق', 'Tolls'), type: 'number', value: 0 }, { f: 'parking', label: tt('انتظار', 'Parking'), type: 'number', value: 0 }],
-      'me.tripComplete', { map: x => ({ id: t.id, endKm: Number(x.endKm), expenses: { tolls: Number(x.tolls) || 0, parking: Number(x.parking) || 0 } }), ok: tt('انتهت الرحلة', 'Trip finished') }); });
+  U.act('my-finish', el => { const t = U.find('trips', el.dataset.id); const b = U.find('bookings', t.bookingId);
+    const code = t.activity === 'cargo' && b.hasCode && !b.deliveredAt;
+    U.formModal(tt('إنهاء الرحلة', 'Finish trip') + ' · ' + t.number, [code ? { f: 'deliveryCode', label: tt('كود التسليم (اطلبه من المستلم)', 'Delivery code (ask the consignee)'), req: true, attrs: 'inputmode="numeric" maxlength="6" dir="ltr" autocomplete="off"' } : null, { f: 'endKm', label: tt('عداد النهاية (كم)', 'End odometer (km)'), type: 'number', req: true }, { f: 'tolls', label: tt('رسوم طرق', 'Tolls'), type: 'number', value: 0 }, { f: 'parking', label: tt('انتظار', 'Parking'), type: 'number', value: 0 }],
+      'me.tripComplete', { map: x => ({ id: t.id, deliveryCode: x.deliveryCode || undefined, endKm: Number(x.endKm), expenses: { tolls: Number(x.tolls) || 0, parking: Number(x.parking) || 0 } }), ok: tt('انتهت الرحلة', 'Trip finished') }); });
 
   U.route('trips', () => {
     const db = U.db(); const P = U.periodRange();
@@ -232,10 +313,11 @@
         { label: tt('العميل', 'Client'), value: t => M.L(U.find('clients', t.clientId).name) },
         { label: tt('المركبة', 'Vehicle'), value: t => U.find('vehicles', t.vehicleId).code, render: t => `<a href="#vehicle.${t.vehicleId}">${U.find('vehicles', t.vehicleId).code}</a>` },
         { label: tt('السائق', 'Driver'), value: t => M.L(U.find('drivers', t.driverId).name) },
+        { label: M.single() ? M.L(M.prof(M.single()).load.label) : tt('الحمولة', 'Load'), num: 1, value: t => t.activity === 'cargo' ? ((U.find('bookings', t.bookingId).loadKg) || 0) : t.pax, render: t => t.activity === 'cargo' ? M.loadText(U.find('bookings', t.bookingId), 'cargo') : M.loadText(t) },
         { label: tt('كم', 'km'), num: 1, value: t => t.km || t.plannedKm, render: t => M.n0(t.km || t.plannedKm) },
         { label: tt('الإيراد', 'Revenue'), num: 1, value: t => t.revenue, render: t => M.money(t.revenue) },
         { label: tt('الحالة', 'Status'), value: t => t.status, render: t => U.status(t.status) + (t.status === 'completed' && !t.invoiced ? ' ' + U.badge(tt('غير مفوترة', 'Not invoiced'), 'muted') : '') },
-      ], filters: [{ label: tt('الحالة', 'Status'), get: t => t.status, options: ['scheduled', 'running', 'completed', 'cancelled'].map(k => [k, U.statusText(k)]) }, { label: tt('النوع', 'Type'), get: t => t.type, options: Object.keys(M.tripTypes).map(k => [k, tripTypeTxt(k)]) }, { label: tt('المصدر', 'Source'), get: t => t.source || 'motus', options: Object.keys(M.tripSources).map(k => [k, M.L(M.tripSources[k])]) }, { label: tt('المركبة', 'Vehicle'), get: t => t.vehicleId, options: db.vehicles.map(v => [v.id, v.code]) }, { label: tt('السائق', 'Driver'), get: t => t.driverId, options: db.drivers.map(d => [d.id, M.L(d.name)]) }], onRow: t => 'trip.' + t.id }), { flush: true });
+      ], filters: [{ label: tt('الحالة', 'Status'), get: t => t.status, options: ['scheduled', 'running', 'completed', 'cancelled'].map(k => [k, U.statusText(k)]) }, { label: tt('النوع', 'Type'), get: t => t.type, options: companyTypes().map(k => [k, tripTypeTxt(k)]) }, M.multi() ? { label: tt('النشاط', 'Activity'), get: t => t.activity, options: M.acts().map(a => [a, M.L(M.actName(a))]) } : null, { label: tt('المصدر', 'Source'), get: t => t.source || 'motus', options: Object.keys(M.tripSources).map(k => [k, M.L(M.tripSources[k])]) }, { label: tt('المركبة', 'Vehicle'), get: t => t.vehicleId, options: db.vehicles.map(v => [v.id, v.code]) }, { label: tt('السائق', 'Driver'), get: t => t.driverId, options: db.drivers.map(d => [d.id, M.L(d.name)]) }], onRow: t => 'trip.' + t.id }), { flush: true });
   });
 
   let tripTab = 'info';
@@ -246,10 +328,13 @@
     const v = U.find('vehicles', t.vehicleId), d = U.find('drivers', t.driverId), cl = U.find('clients', t.clientId);
     const b = t.bookingId ? U.find('bookings', t.bookingId) : null, prog = t.programId ? U.find('programs', t.programId) : null, inv = t.invoiceId ? U.find('invoices', t.invoiceId) : null;
     const cost = C.tripCost(cid, t);
-    const tabs = [['info', tt('البيانات', 'Details')], ['order', tt('أمر التشغيل', 'Trip order')], ['manifest', tt('كشف الركاب', 'Passenger manifest')], ['notify', tt('الإشعارات', 'Notifications')]];
+    // the passenger manifest is tourism's (MOTUS holds no names for schools, staff or intercity passengers)
+    const tabs = [['info', tt('البيانات', 'Details')], ['order', t.activity === 'cargo' ? tt('بوليصة الشحن', 'Waybill') : tt('أمر التشغيل', 'Trip order')], t.activity === 'tourism' ? ['manifest', tt('كشف الركاب', 'Passenger manifest')] : null, ['notify', tt('الإشعارات', 'Notifications')]].filter(Boolean);
+    if (!tabs.some(x => x[0] === tripTab)) tripTab = 'info';
+    const line = t.lineId ? U.find('lines', t.lineId) : null;
     let body = '';
     if (tripTab === 'info') {
-      body = `<div class="cols-2">` + U.card(tt('بيانات الرحلة', 'Trip details'), U.dl([[tt('النوع', 'Type'), tripTypeTxt(t.type)], [tt('المصدر', 'Source'), M.L(M.tripSources[t.source || 'motus']) + (t.contractId ? ` · <a href="#contract.${t.contractId}">${M.esc(U.find('contracts', t.contractId).number || '')}</a>` : '') + (t.externalRef ? ` <span class="muted small ltr">${M.esc(t.externalRef)}</span>` : '')], [tt('المسار', 'Route'), U.routeTxt(t.from, t.to)], [tt('التاريخ', 'Date'), M.date(t.date)], [tt('الوقت', 'Time'), `<span class="num">${t.startTime} – ${t.endTime}</span>${t.endsAt && t.endsAt.slice(0, 10) !== t.date ? ' ' + U.badge(tt('بتنتهي ', 'Ends ') + M.date(t.endsAt.slice(0, 10)), 'warning') : ''}`], [tt('المركبة', 'Vehicle'), U.vLabel(v)], [tt('السائق', 'Driver'), U.dLabel(d)], [tt('الركاب', 'Passengers'), t.pax], [tt('عداد البداية', 'Start km'), M.n0(t.startKm)], [tt('عداد النهاية', 'End km'), M.n0(t.endKm)], [tt('المسافة', 'Distance'), t.km ? `${M.n0(t.km)} ${tt('كم', 'km')} ${t.gpsKm ? `<span class="muted small">(GPS ${M.n0(t.gpsKm)})</span>` : ''}` : `${M.n0(t.plannedKm)} ${tt('كم مخطط', 'km planned')}`], M.has('tourism') && [tt('الطيران', 'Flight'), t.flight ? `${M.esc(t.flight)} ${t.flightStatus ? U.badge({ ontime: tt('في الموعد', 'On time'), delayed: tt('متأخر', 'Delayed'), landed: tt('هبطت', 'Landed'), cancelled: tt('ملغاة', 'Cancelled') }[t.flightStatus], t.flightStatus === 'delayed' || t.flightStatus === 'cancelled' ? 'warning' : 'success') : ''}` : '—'], [tt('الالتزام بالموعد', 'On time'), t.onTime == null ? '—' : t.onTime ? U.badge(tt('في الموعد', 'On time'), 'success') : U.badge(tt(`تأخير ${t.delayMin} دقيقة`, `${t.delayMin} min late`), 'warning')], t.cancelReason ? [tt('سبب الإلغاء', 'Cancellation reason'), M.esc(tt(t.cancelReason[0], t.cancelReason[1]))] : null])) +
+      body = `<div class="cols-2">` + U.card(tt('بيانات الرحلة', 'Trip details'), U.dl([[tt('النوع', 'Type'), tripTypeTxt(t.type)], [tt('المصدر', 'Source'), M.L(M.tripSources[t.source || 'motus']) + (t.contractId ? ` · <a href="#contract.${t.contractId}">${M.esc(U.find('contracts', t.contractId).number || '')}</a>` : '') + (t.externalRef ? ` <span class="muted small ltr">${M.esc(t.externalRef)}</span>` : '')], [tt('المسار', 'Route'), U.routeTxt(t.from, t.to)], [tt('التاريخ', 'Date'), M.date(t.date)], [tt('الوقت', 'Time'), `<span class="num">${t.startTime} – ${t.endTime}</span>${t.endsAt && t.endsAt.slice(0, 10) !== t.date ? ' ' + U.badge(tt('بتنتهي ', 'Ends ') + M.date(t.endsAt.slice(0, 10)), 'warning') : ''}`], [tt('المركبة', 'Vehicle'), U.vLabel(v)], [tt('السائق', 'Driver'), U.dLabel(d)], M.multi() ? [tt('النشاط', 'Activity'), M.L(M.actName(t.activity))] : null, line ? [tt('الخط', 'Line'), `<a href="#line.${line.id}">${line.number} · ${M.esc(M.L(line.name))}</a>${t.lineLeg ? ' · ' + M.L((M.prof(t.activity) || {}).legNames ? M.prof(t.activity).legNames[t.lineLeg] : { ar: t.lineLeg, en: t.lineLeg }) : ''}`] : null, t.activity === 'cargo' && b ? [tt('الشحنة', 'Shipment'), `<a href="#booking.${b.id}">${b.number}</a> · ${M.esc(b.goods || '')} · ${M.loadText(b, 'cargo')}${b.deliveredAt ? ' ' + U.badge(tt('اتسلمت', 'Delivered'), 'success') : b.hasCode ? ' ' + U.badge(tt('في انتظار كود المستلم', 'Waiting for the consignee code'), 'warning') : ''}`] : [M.L((M.prof(t.activity) || M.prof(M.acts()[0]) || { load: { label: { ar: 'الركاب', en: 'Passengers' } } }).load.label), t.pax], [tt('عداد البداية', 'Start km'), M.n0(t.startKm)], [tt('عداد النهاية', 'End km'), M.n0(t.endKm)], [tt('المسافة', 'Distance'), t.km ? `${M.n0(t.km)} ${tt('كم', 'km')} ${t.gpsKm ? `<span class="muted small">(GPS ${M.n0(t.gpsKm)})</span>` : ''}` : `${M.n0(t.plannedKm)} ${tt('كم مخطط', 'km planned')}`], M.has('tourism') && [tt('الطيران', 'Flight'), t.flight ? `${M.esc(t.flight)} ${t.flightStatus ? U.badge({ ontime: tt('في الموعد', 'On time'), delayed: tt('متأخر', 'Delayed'), landed: tt('هبطت', 'Landed'), cancelled: tt('ملغاة', 'Cancelled') }[t.flightStatus], t.flightStatus === 'delayed' || t.flightStatus === 'cancelled' ? 'warning' : 'success') : ''}` : '—'], [tt('الالتزام بالموعد', 'On time'), t.onTime == null ? '—' : t.onTime ? U.badge(tt('في الموعد', 'On time'), 'success') : U.badge(tt(`تأخير ${t.delayMin} دقيقة`, `${t.delayMin} min late`), 'warning')], t.cancelReason ? [tt('سبب الإلغاء', 'Cancellation reason'), M.esc(tt(t.cancelReason[0], t.cancelReason[1]))] : null])) +
         U.card(tt('الإيراد والتكلفة', 'Revenue & cost'), U.dl([[tt('الإيراد', 'Revenue'), `<b>${M.money(t.revenue)}</b>`], [tt('كارتة', 'Tolls'), M.money(t.expenses.tolls)], [tt('جراج وانتظار', 'Parking'), M.money(t.expenses.parking)], [tt('إقامة سائق', 'Driver lodging'), M.money(t.expenses.lodging)], [tt('مصروفات أخرى', 'Other'), M.money(t.expenses.other)], [tt('وقود (تقديري)', 'Fuel (est.)'), M.money(cost.fuel)], [tt('صيانة وزيت (تقديري)', 'Maintenance & oil (est.)'), M.money(cost.maint)], [tt('حصة التكاليف الثابتة', 'Fixed cost share'), M.money(cost.fixed)], [tt('ربح الرحلة', 'Trip profit'), U.money(t.revenue - cost.total)]]) + `<div class="muted small" style="margin-top:8px">${tt('الوقود والصيانة محسوبين بتكلفة الكيلو الفعلية للمركبة. الثابت = (سائق + رخص وتأمين + إهلاك) ÷ أيام التشغيل.', 'Fuel and maintenance use the vehicle’s actual cost per km. Fixed = (driver + license & insurance + depreciation) ÷ operating days.')}</div>`) + `</div>`;
     } else if (tripTab === 'order') {
       body = tripOrder(t, v, d, cl, prog);
@@ -264,7 +349,7 @@
     const acts = !canOps ? '' : t.status === 'scheduled' ? `${U.btn(tt('بدء الرحلة', 'Start trip'), 'app-start', '', 'arrow', `data-id="${t.id}"`)} ${U.btn(tt('تعديل', 'Change'), 'trip-edit', 'secondary', 'settings', `data-id="${t.id}"`)} ${!t.programId ? U.btn(tt('إلغاء التخصيص', 'Unassign'), 'trip-unassign', 'ghost', '', `data-id="${t.id}"`) : ''} ${U.btn(tt('إلغاء الرحلة', 'Cancel trip'), 'trip-cancel', 'danger', '', `data-id="${t.id}"`)}`
       : t.status === 'running' ? `${U.btn(tt('إنهاء الرحلة', 'End trip'), 'app-end', '', 'check', `data-id="${t.id}"`)} ${U.btn(tt('مصروف', 'Expense'), 'app-exp', 'secondary', 'receipt', `data-id="${t.id}"`)}` : '';
     return U.head(t.number, `${U.routeTxt(t.from, t.to)} · ${M.date(t.date)} ${t.startTime}`, `${U.status(t.status)} ${acts}`, [[tt('الرحلات', 'Trips'), 'trips'], [t.number]]) +
-      U.card(tt('السلسلة', 'Chain'), chain(cl, prog, b, t, inv)) + '<div style="height:16px"></div>' +
+      U.card(tt('السلسلة', 'Chain'), chain(cl, prog, b, t, inv, t.activity, line)) + '<div style="height:16px"></div>' +
       `<div class="tabs" role="tablist">${tabs.map(x => `<button role="tab" class="${tripTab === x[0] ? 'on' : ''}" data-act="triptab" data-t="${x[0]}">${x[1]}</button>`).join('')}</div>` + body;
   });
   U.act('trip-edit', el => {
@@ -272,9 +357,9 @@
     U.formModal(tt('تعديل الرحلة', 'Change trip'), [
       { f: 'startTime', label: tt('ميعاد الاستلام', 'Pickup time'), type: 'time', value: t.startTime },
       { f: 'driverId', label: tt('السائق', 'Driver'), type: 'select', value: t.driverId, options: db.drivers.filter(d => d.status === 'active').map(d => [d.id, M.L(d.name)]) },
-      { f: 'pax', label: tt('عدد الركاب', 'Passengers'), type: 'number', value: t.pax, attrs: 'min="1"' },
-      M.has('tourism') ? { f: 'flight', label: tt('رقم الطيران', 'Flight'), value: t.flight } : null,
-      !M.has('tourism') ? null : { f: 'flightStatus', label: tt('حالة الطيران', 'Flight status'), type: 'select', value: t.flightStatus || '', options: [['', '—'], ['ontime', tt('في الموعد', 'On time')], ['delayed', tt('متأخر', 'Delayed')], ['landed', tt('هبطت', 'Landed')], ['cancelled', tt('ملغاة', 'Cancelled')]] },
+      t.activity === 'cargo' ? null : { f: 'pax', label: M.L((M.prof(t.activity) || M.prof(M.acts()[0])).load.label), type: 'number', value: t.pax, attrs: 'min="1"' },
+      t.activity === 'tourism' ? { f: 'flight', label: tt('رقم الطيران', 'Flight'), value: t.flight } : null,
+      t.activity !== 'tourism' ? null : { f: 'flightStatus', label: tt('حالة الطيران', 'Flight status'), type: 'select', value: t.flightStatus || '', options: [['', '—'], ['ontime', tt('في الموعد', 'On time')], ['delayed', tt('متأخر', 'Delayed')], ['landed', tt('هبطت', 'Landed')], ['cancelled', tt('ملغاة', 'Cancelled')]] },
     ], 'trip.update', { map: d => { const out = { id: t.id }; if (d.startTime !== t.startTime) out.startTime = d.startTime; if (d.driverId !== t.driverId) out.driverId = d.driverId; if (d.pax !== t.pax) out.pax = d.pax; if ((d.flight || null) !== (t.flight || null)) out.flight = d.flight; if (d.flightStatus) out.flightStatus = d.flightStatus; return out; } });
   });
   U.act('trip-cancel', el => U.confirm(tt('إلغاء الرحلة', 'Cancel trip'), tt('الرحلة والحجز المرتبط بيها هيتلغوا.', 'The trip and its booking will be cancelled.'), r => U.run('trip.cancel', { id: el.dataset.id, reason: r }, { ok: tt('تم الإلغاء', 'Cancelled') }), { reason: true, danger: true }));
@@ -284,7 +369,7 @@
   U.msgTemplates = t => {
     const v = U.find('vehicles', t.vehicleId), d = U.find('drivers', t.driverId), cl = U.find('clients', t.clientId);
     return [
-      ['driver', tt('للسائق: أمر التشغيل', 'To driver: trip order'), d.phone, tt(`أمر تشغيل ${t.number}: ${U.place(t.from)} ← ${U.place(t.to)} يوم ${M.date(t.date)} الساعة ${t.startTime}. العميل ${M.L(cl.name)}، ${t.pax} راكب.${t.flight ? ' طيران ' + t.flight : ''}`, `Trip order ${t.number}: ${U.place(t.from)} → ${U.place(t.to)} on ${M.date(t.date)} at ${t.startTime}. Client ${M.L(cl.name)}, ${t.pax} pax.${t.flight ? ' Flight ' + t.flight : ''}`)],
+      ['driver', tt('للسائق: أمر التشغيل', 'To driver: trip order'), d.phone, tt(`أمر تشغيل ${t.number}: ${U.place(t.from)} ← ${U.place(t.to)} يوم ${M.date(t.date)} الساعة ${t.startTime}. العميل ${M.L(cl.name)}، ${M.loadText(t.activity === 'cargo' ? U.find('bookings', t.bookingId) : t, t.activity)}.${t.flight ? ' طيران ' + t.flight : ''}`, `Trip order ${t.number}: ${U.place(t.from)} → ${U.place(t.to)} on ${M.date(t.date)} at ${t.startTime}. Client ${M.L(cl.name)}, ${M.loadText(t.activity === 'cargo' ? U.find('bookings', t.bookingId) : t, t.activity)}.${t.flight ? ' Flight ' + t.flight : ''}`)],
       ['client', tt('للعميل: بيانات السائق', 'To client: driver details'), cl.phone, tt(`السائق ${M.L(d.name)} (${d.phone}) سيستلمكم بالمركبة ${M.L(v.plate)} الساعة ${t.startTime} من ${U.place(t.from)}.`, `Your driver ${M.L(d.name)} (${d.phone}) will pick you up in ${M.L(v.plate)} at ${t.startTime} from ${U.place(t.from)}.`)],
       ['client', tt('تذكير قبلها بيوم', 'Reminder the day before'), cl.phone, tt(`تذكير: رحلتكم يوم ${M.date(t.date)} الساعة ${t.startTime} من ${U.place(t.from)}.`, `Reminder: your trip is on ${M.date(t.date)} at ${t.startTime} from ${U.place(t.from)}.`)],
       ['client', tt('السائق وصل', 'Driver arrived'), cl.phone, tt(`السائق وصل إلى ${U.place(t.from)} ومنتظركم.`, `Your driver has arrived at ${U.place(t.from)}.`)],
@@ -318,13 +403,32 @@
     for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (q.getModule(x, y)) d += `M${x} ${y}h1v1h-1z`;
     return `<svg class="qr" viewBox="-2 -2 ${n + 4} ${n + 4}" role="img" aria-label="QR ${M.esc(text)}" shape-rendering="crispEdges"><rect x="-2" y="-2" width="${n + 4}" height="${n + 4}" fill="#fff"/><path d="${d}" fill="#08264A"/></svg>`;
   };
+  /* what the trip order says about the load: passengers, headcount + stops, or the shipment */
+  function orderLoad(t) {
+    const p = M.prof(t.activity) || M.prof(M.acts()[0]);
+    if (t.activity === 'cargo') {
+      const b = U.find('bookings', t.bookingId); const fl = (b.cargoFlags || []).map(f => M.L((M.profiles.cargoFlags || {})[f] || { ar: f, en: f }));
+      return [[tt('رقم الشحنة', 'Shipment no.'), `<span class="mono">${M.esc(b.number)}</span>`], [tt('البضاعة', 'Goods'), M.esc(b.goods || '—') + (fl.length ? ' · ' + fl.map(M.esc).join(' · ') : '')],
+        [tt('الوزن / الطرود / الحجم', 'Weight / pieces / volume'), `${M.loadText(b, 'cargo')} · ${b.pieces || '—'} · ${b.volumeM3 ? M.n1(b.volumeM3) + ' ' + tt('م³', 'm³') : '—'}`],
+        [tt('آخر موعد للتسليم', 'Deliver by'), U.deadline(b)]];
+    }
+    const line = t.lineId ? U.find('lines', t.lineId) : null;
+    return [[M.L(p.load.label), t.pax], line && line.stops && line.stops.length ? [tt('المحطات', 'Stops'), line.stops.map(U.place).map(M.esc).join(' ← ')] : null];
+  }
+  /* proof of delivery on the waybill: the consignee's code closes it in MOTUS (only the code's hash is kept, no consignee data) */
+  function podBlock(t) {
+    const b = U.find('bookings', t.bookingId);
+    if (!b.hasCode && !b.deliveredAt) return `<div class="sep"></div>${U.dl([[tt('إثبات التسليم', 'Proof of delivery'), t.type === 'empty_return' ? tt('عودة فاضية — مفيش تسليم', 'Empty return — nothing to deliver') : '—']])}`;
+    const st = b.deliveredAt ? `${U.badge(tt('اتسلمت', 'Delivered'), 'success')} ${M.esc(b.deliveredAt)} · ${M.esc(b.deliveredBy || '')}` : b.codeLocked ? U.badge(tt('الكود مقفول — مطلوب كود جديد', 'Code locked — a new code is needed'), 'danger') : tt('مستني كود المستلم', 'Waiting for the consignee code');
+    return `<div class="sep"></div><h3 style="font-size:15px;margin:0 0 8px">${tt('إثبات التسليم', 'Proof of delivery')}</h3>${U.dl([[tt('الحالة', 'Status'), st], [tt('الطريقة', 'Method'), tt('السواق بيدخل كود التسليم (6 أرقام) اللي مع المستلم من الشاحن. من غير الكود الصح الشحنة ما تتقفلش.', 'The driver enters the 6-digit delivery code the consignee got from the shipper. Without the right code the shipment cannot close.')]])}`;
+  }
   function tripOrder(t, v, d, cl, prog) {
     const pf = M.places[t.from] || {};
     const mapUrl = pf.lat != null ? `https://www.openstreetmap.org/?mlat=${pf.lat}&mlon=${pf.lng}#map=15/${pf.lat}/${pf.lng}` : null;
     const qrText = `MOTUS ${t.number} | ${t.date} ${t.startTime} | ${U.place(t.from)} > ${U.place(t.to)} | ${v.code} ${M.L(v.plate)} | ${M.L(d.name)} ${d.phone || ''}`;
-    return `<div class="doc-sheet" id="trip-order"><div class="doc-head"><div>${U.logo('#08264A').replace('<svg', '<svg style="height:26px"')}<div class="muted small">${M.esc(M.L(U.company().name))}</div></div><div style="text-align:end"><b style="font-size:18px">${tt('أمر تشغيل', 'Trip order')}</b><div class="mono">${t.number}</div><div class="small muted">${M.date(t.date)}</div></div>${U.qr(qrText)}</div>
-      <div class="cols-2">${U.dl([[tt('العميل', 'Client'), M.esc(M.L(cl.name))], [tt('مسؤول العميل', 'Client contact'), `${M.esc(M.L(cl.contact))} · <span class="ltr">${M.esc(cl.phone)}</span>`], [tt('المرشد / قائد المجموعة', 'Guide / group leader'), prog && !prog._missing ? `${M.esc(M.L(prog.guide))} · <span class="ltr">${M.esc(prog.guidePhone)}</span>` : '—'], [tt('عدد الركاب', 'Passengers'), t.pax], [tt('رقم الطيران', 'Flight'), M.esc(t.flight || '—')]])}${U.dl([[tt('المركبة', 'Vehicle'), `${M.esc(v.code)} · ${M.esc(M.L(v.plate))}`], [tt('السائق', 'Driver'), `${M.esc(M.L(d.name))} · <span class="ltr">${M.esc(d.phone)}</span>`], [tt('ميعاد الاستلام', 'Pickup time'), `<b class="num">${t.startTime}</b>`], [tt('مكان الاستلام', 'Pickup point'), `${M.esc(U.place(t.from))}${mapUrl ? ` · <a href="${mapUrl}" target="_blank" rel="noopener">${tt('فتح الخريطة', 'Open map')}</a>` : ''}`], [tt('الوجهة', 'Destination'), M.esc(U.place(t.to))]])}</div>
-      <div class="sep"></div>${U.dl([[tt('المسار', 'Route'), `${U.routeTxt(t.from, t.to)} · ${M.n0(t.plannedKm)} ${tt('كم', 'km')}`], [tt('كارتة متوقعة', 'Expected tolls'), M.money(t.plannedTolls)], [tt('ملاحظات', 'Notes'), tt('الفحص قبل الرحلة إلزامي. سجّل العداد عند البدء والانتهاء.', 'Pre-trip inspection is required. Record the odometer at start and end.')]])}
+    return `<div class="doc-sheet" id="trip-order"><div class="doc-head"><div>${U.logo('#08264A').replace('<svg', '<svg style="height:26px"')}<div class="muted small">${M.esc(M.L(U.company().name))}</div></div><div style="text-align:end"><b style="font-size:18px">${t.activity === 'cargo' ? tt('بوليصة شحن', 'Waybill') : tt('أمر تشغيل', 'Trip order')}</b><div class="mono">${t.number}</div><div class="small muted">${M.date(t.date)}</div></div>${U.qr(qrText)}</div>
+      <div class="cols-2">${U.dl([[tt('العميل', 'Client'), M.esc(M.L(cl.name))], [tt('مسؤول العميل', 'Client contact'), `${M.esc(M.L(cl.contact))} · <span class="ltr">${M.esc(cl.phone)}</span>`], t.activity === 'tourism' ? [tt('المرشد / قائد المجموعة', 'Guide / group leader'), prog && !prog._missing ? `${M.esc(M.L(prog.guide))} · <span class="ltr">${M.esc(prog.guidePhone)}</span>` : '—'] : null, ...orderLoad(t), t.activity === 'tourism' ? [tt('رقم الطيران', 'Flight'), M.esc(t.flight || '—')] : null])}${U.dl([[tt('المركبة', 'Vehicle'), `${M.esc(v.code)} · ${M.esc(M.L(v.plate))}`], [tt('السائق', 'Driver'), `${M.esc(M.L(d.name))} · <span class="ltr">${M.esc(d.phone)}</span>`], [tt('ميعاد الاستلام', 'Pickup time'), `<b class="num">${t.startTime}</b>`], [tt('مكان الاستلام', 'Pickup point'), `${M.esc(U.place(t.from))}${mapUrl ? ` · <a href="${mapUrl}" target="_blank" rel="noopener">${tt('فتح الخريطة', 'Open map')}</a>` : ''}`], [tt('الوجهة', 'Destination'), M.esc(U.place(t.to))]])}</div>
+      <div class="sep"></div>${U.dl([[tt('المسار', 'Route'), `${U.routeTxt(t.from, t.to)} · ${M.n0(t.plannedKm)} ${tt('كم', 'km')}`], [tt('كارتة متوقعة', 'Expected tolls'), M.money(t.plannedTolls)], [tt('ملاحظات', 'Notes'), tt('الفحص قبل الرحلة إلزامي. سجّل العداد عند البدء والانتهاء.', 'Pre-trip inspection is required. Record the odometer at start and end.')]])}${t.activity === 'cargo' ? podBlock(t) : ''}
       <div class="actions no-print" style="margin-top:14px"><button class="btn secondary" data-act="print-order">${U.icon('download')}${tt('طباعة / حفظ PDF', 'Print / save as PDF')}</button><button class="btn secondary" data-act="msg-open" data-to="driver" data-id="${t.id}">${U.icon('message')}${tt('إرسال للسائق على واتساب', 'Send to driver on WhatsApp')}</button></div></div>`;
   }
   U.act('print-order', () => { document.body.classList.add('print-doc'); window.print(); setTimeout(() => document.body.classList.remove('print-doc'), 500); });
@@ -344,7 +448,7 @@
       const p = ts.find(t => t.programId);
       return `<a class="cell ${ts.length > 2 ? 'c3' : ts.length > 1 ? 'c2' : 'c1'}" href="#trip.${ts[0].id}" title="${ts.map(t => t.number + ' ' + t.startTime).join(', ')}">${p ? '★' : ''}${ts.length}</a>`;
     };
-    return U.head(tt('تقويم الحركة', 'Operations calendar'), tt('كل صف مركبة وكل عمود يوم. الرقم = عدد الرحلات، ★ = يوم في برنامج.', 'Each row is a vehicle and each column a day. Number = trips, ★ = program day.'), `<div class="seg"><button data-act="calmode" data-m="week" class="${calMode === 'week' ? 'on' : ''}">${tt('أسبوع', 'Week')}</button><button data-act="calmode" data-m="month" class="${calMode === 'month' ? 'on' : ''}">${tt('شهر', 'Month')}</button></div>`) +
+    return U.head(tt('تقويم الحركة', 'Operations calendar'), (M.has('tourism') ? tt('كل صف مركبة وكل عمود يوم. الرقم = عدد الرحلات، ★ = يوم في برنامج.', 'Each row is a vehicle and each column a day. Number = trips, ★ = program day.') : tt('كل صف مركبة وكل عمود يوم. الرقم = عدد الرحلات.', 'Each row is a vehicle and each column a day. Number = trips.')), `<div class="seg"><button data-act="calmode" data-m="week" class="${calMode === 'week' ? 'on' : ''}">${tt('أسبوع', 'Week')}</button><button data-act="calmode" data-m="month" class="${calMode === 'month' ? 'on' : ''}">${tt('شهر', 'Month')}</button></div>`) +
       U.card(null, `<div class="cal"><table><thead><tr><th>${tt('المركبة', 'Vehicle')}</th>${days.map(d => `<th class="${d === M.TODAY ? 'today' : ''}">${dn[M.dow(d)]}<br><span class="num">${d.slice(8)}/${d.slice(5, 7)}</span></th>`).join('')}</tr></thead><tbody>${db.vehicles.map(v => `<tr><td class="lbl"><a href="#vehicle.${v.id}">${v.code}</a> <span class="muted small">${U.vtype(v.type)}</span></td>${days.map(d => `<td class="${d === M.TODAY ? 'today' : ''}">${cell(v, d)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><div class="legend-inline" style="padding:12px 16px"><span><i style="background:#C3CFDC"></i>1 ${tt('رحلة', 'trip')}</span><span><i style="background:#8FA3BA"></i>2</span><span><i style="background:#2C4A6E"></i>3+</span><span><i style="background:#FFF7E6;border:1px solid #B45309"></i>${tt('صيانة', 'Workshop')}</span></div>`, { flush: true });
   });
 
@@ -562,13 +666,18 @@
     if (!d) return U.head(tt('شاشة السائق', 'Driver app view'), '') + U.empty('user', tt('لا يوجد سائقين بعد', 'No drivers yet'), `<a class="btn" href="#drivers">${tt('إضافة سائق', 'Add driver')}</a>`);
     const ts = db.trips.filter(t => t.driverId === d.id && (t.date === M.TODAY || t.date === M.addDays(M.TODAY, 1)) && t.status !== 'cancelled');
     return U.head(tt('شاشة السائق', 'Driver app view'), tt('شاشة موبايل لمدير الحركة أو السائق: رحلات اليوم وبكرة، بدء وإنهاء الرحلة بالعداد، الفحص، المصاريف، والإبلاغ عن مشكلة. كل إجراء يُسجّل فعلياً.', 'Mobile screen for the dispatcher or driver: today’s and tomorrow’s trips, start/end with odometer, inspection, expenses and issue reports. Every action is saved.'), `<select class="select" data-change="app-driver" aria-label="${tt('السائق', 'Driver')}">${db.drivers.map(x => `<option value="${x.id}" ${x.id === d.id ? 'selected' : ''}>${M.L(x.name)}</option>`).join('')}</select>`) +
-      `<div style="max-width:400px;margin-inline:auto;border:8px solid #061D38;border-radius:28px;overflow:hidden;background:#F4F6F9"><div style="background:#061D38;color:#fff;padding:14px 16px">${U.logo('#fff').replace('<svg', '<svg style="height:20px"')}<div style="margin-top:8px;font-weight:600">${tt('أهلاً', 'Hi')} ${M.L(d.name).split(' ')[0]}</div><div class="small" style="opacity:.7">${d.vehicleId ? U.find('vehicles', d.vehicleId).code + ' · ' + M.L(U.find('vehicles', d.vehicleId).plate) : ''}</div></div><div style="padding:12px;display:grid;gap:10px">${ts.length ? ts.map(t => `<div class="card" style="padding:12px"><div style="display:flex;justify-content:space-between;gap:8px"><b class="num">${t.date === M.TODAY ? tt('اليوم', 'Today') : tt('بكرة', 'Tomorrow')} ${t.startTime}</b>${U.status(t.status)}</div><div style="margin:6px 0">${U.routeTxt(t.from, t.to)}</div><div class="small muted">${M.L(U.find('clients', t.clientId).name)} · ${t.pax} ${tt('راكب', 'pax')}${t.flight ? ' · ' + t.flight : ''}</div><div class="actions" style="margin-top:10px">${t.status === 'scheduled' ? `<button class="btn sm" data-act="app-start" data-id="${t.id}">${tt('بدء الرحلة', 'Start trip')}</button><button class="btn secondary sm" data-act="go-insp" data-v="${t.vehicleId}">${tt('الفحص', 'Inspection')}</button>` : t.status === 'running' ? `<button class="btn sm" data-act="app-end" data-id="${t.id}">${tt('إنهاء الرحلة', 'End trip')}</button>` : ''}${t.status !== 'completed' ? `<button class="btn ghost sm" data-act="app-exp" data-id="${t.id}">${tt('مصروف', 'Expense')}</button>` : ''}<button class="btn ghost sm" data-act="app-issue" data-v="${t.vehicleId}">${tt('بلّغ عن مشكلة', 'Report issue')}</button></div></div>`).join('') : U.empty('calendar', tt('لا توجد رحلات اليوم أو بكرة', 'No trips today or tomorrow'))}</div></div>`;
+      `<div style="max-width:400px;margin-inline:auto;border:8px solid #061D38;border-radius:28px;overflow:hidden;background:#F4F6F9"><div style="background:#061D38;color:#fff;padding:14px 16px">${U.logo('#fff').replace('<svg', '<svg style="height:20px"')}<div style="margin-top:8px;font-weight:600">${tt('أهلاً', 'Hi')} ${M.L(d.name).split(' ')[0]}</div><div class="small" style="opacity:.7">${d.vehicleId ? U.find('vehicles', d.vehicleId).code + ' · ' + M.L(U.find('vehicles', d.vehicleId).plate) : ''}</div></div><div style="padding:12px;display:grid;gap:10px">${ts.length ? ts.map(t => `<div class="card" style="padding:12px"><div style="display:flex;justify-content:space-between;gap:8px"><b class="num">${t.date === M.TODAY ? tt('اليوم', 'Today') : tt('بكرة', 'Tomorrow')} ${t.startTime}</b>${U.status(t.status)}</div><div style="margin:6px 0">${U.routeTxt(t.from, t.to)}</div><div class="small muted">${M.L(U.find('clients', t.clientId).name)} · ${M.esc(M.L(M.typeName(t.type)))} · ${t.activity === 'cargo' ? M.loadText(U.find('bookings', t.bookingId), 'cargo') : M.loadText(t)}${t.activity === 'tourism' && t.flight ? ' · ' + t.flight : ''}</div><div class="actions" style="margin-top:10px">${t.status === 'scheduled' ? `<button class="btn sm" data-act="app-start" data-id="${t.id}">${tt('بدء الرحلة', 'Start trip')}</button><button class="btn secondary sm" data-act="go-insp" data-v="${t.vehicleId}">${tt('الفحص', 'Inspection')}</button>` : t.status === 'running' ? `<button class="btn sm" data-act="app-end" data-id="${t.id}">${tt('إنهاء الرحلة', 'End trip')}</button>` : ''}${t.status !== 'completed' ? `<button class="btn ghost sm" data-act="app-exp" data-id="${t.id}">${tt('مصروف', 'Expense')}</button>` : ''}<button class="btn ghost sm" data-act="app-issue" data-v="${t.vehicleId}">${tt('بلّغ عن مشكلة', 'Report issue')}</button></div></div>`).join('') : U.empty('calendar', tt('لا توجد رحلات اليوم أو بكرة', 'No trips today or tomorrow'))}</div></div>`;
   });
   U.act('go-insp', el => { const v = el.dataset.v; location.hash = 'inspections'; setTimeout(() => U.acts['new-insp']({ dataset: { v } }), 80); });
   U.act('app-start', el => { const t = U.find('trips', el.dataset.id); const v = U.find('vehicles', t.vehicleId); U.formModal(tt('بدء الرحلة', 'Start trip'), [{ f: 'odometer', label: tt('قراءة العداد', 'Odometer reading'), type: 'number', value: v.odometer, req: true, attrs: 'min="0"' }], 'trip.start', { submit: tt('بدء', 'Start'), map: d => Object.assign(d, { id: t.id }), ok: tt('بدأت الرحلة', 'Trip started') }); });
   U.act('app-end', el => {
     const t = U.find('trips', el.dataset.id); const v = U.find('vehicles', t.vehicleId);
+    const bk = t.bookingId ? U.find('bookings', t.bookingId) : null;
+    const needCode = t.activity === 'cargo' && bk && bk.hasCode && !bk.deliveredAt;
+    const admin = ['super_admin', 'company_admin'].includes(M.state.role);
     U.formModal(tt('إنهاء الرحلة', 'End trip'), [
+      needCode ? { f: 'deliveryCode', label: tt('كود التسليم (من المستلم)', 'Delivery code (from the consignee)'), attrs: 'inputmode="numeric" maxlength="6" dir="ltr" autocomplete="off"', help: tt('الرحلة مش هتقفل غير بالكود الصح.', 'The trip closes only with the right code.') } : null,
+      needCode && admin ? { f: 'overrideReason', label: tt('أو: سبب القفل بدون كود (مدير النظام بس)', 'Or: reason to close without the code (admin only)'), full: true } : null,
       t.startKm == null ? { f: 'startKm', label: tt('عداد البداية', 'Start odometer'), type: 'number', value: v.odometer, req: true, attrs: 'min="0"' } : null,
       { f: 'endKm', label: tt('عداد النهاية', 'End odometer'), type: 'number', value: Math.round((t.startKm != null ? t.startKm : v.odometer) + (t.plannedKm || 0)), req: true, attrs: 'min="0"' },
       { f: 'tolls', label: tt('كارتة', 'Tolls'), type: 'number', value: 0, attrs: 'min="0"' },
@@ -577,7 +686,7 @@
       { f: 'lodging', label: tt('إقامة السائق', 'Driver lodging'), type: 'number', value: 0, attrs: 'min="0"' },
       { f: 'other', label: tt('مصروفات أخرى', 'Other expenses'), type: 'number', value: 0, attrs: 'min="0"' },
       { f: 'delayMin', label: tt('التأخير عن الموعد (دقائق)', 'Late pickup (minutes)'), type: 'number', value: 0, attrs: 'min="0"' },
-    ], 'trip.complete', { submit: tt('إنهاء', 'End'), map: d => ({ id: t.id, startKm: d.startKm, endKm: d.endKm, tollsPaidBy: d.tollsPaidBy, delayMin: d.delayMin, expenses: { tolls: d.tolls, parking: d.parking, lodging: d.lodging, other: d.other } }), ok: r => tt(`تم إنهاء الرحلة · ${M.n0(r.km)} كم`, `Trip completed · ${M.n0(r.km)} km`) });
+    ], 'trip.complete', { submit: tt('إنهاء', 'End'), map: d => ({ id: t.id, deliveryCode: d.deliveryCode || undefined, overrideReason: d.overrideReason || undefined, startKm: d.startKm, endKm: d.endKm, tollsPaidBy: d.tollsPaidBy, delayMin: d.delayMin, expenses: { tolls: d.tolls, parking: d.parking, lodging: d.lodging, other: d.other } }), ok: r => tt(`تم إنهاء الرحلة · ${M.n0(r.km)} كم`, `Trip completed · ${M.n0(r.km)} km`) });
   });
   U.act('app-exp', el => U.formModal(tt('تسجيل مصروف', 'Record expense'), [
     { f: 'kind', label: tt('النوع', 'Type'), type: 'select', options: [['tolls', tt('كارتة', 'Toll')], ['parking', tt('جراج', 'Parking')], ['lodging', tt('إقامة', 'Lodging')], ['other', tt('أخرى', 'Other')]] },
@@ -724,6 +833,7 @@
     const busy = new Set(db.contractVehicles.filter(x => (!x.to || x.to >= M.TODAY) && (U.find('contracts', x.contractId).exclusive)).map(x => x.vehicleId));
     const vs = db.vehicles.filter(v => v.status !== 'sold' && !busy.has(v.id));
     U.formModal(tt('عقد تشغيل جديد', 'New operating contract'), [
+      M.multi() ? { f: 'activity', label: tt('النشاط اللي العقد بيخدمه', 'Activity the contract serves'), type: 'select', options: M.acts().map(a => [a, M.L(M.actName(a))]) } : null,
       { f: 'clientId', label: tt('العميل (اللي بيدفع)', 'Client (who pays)'), type: 'select', req: true, options: db.clients.map(c => [c.id, M.L(c.name)]) },
       { f: 'name', label: tt('اسم العقد', 'Contract name'), req: true },
       { f: 'channel', label: tt('الرحلات بتتشغّل وتتأكد من', 'Trips are run and confirmed from'), type: 'select', value: 'external', options: Object.entries(K_CH).map(([kk, v]) => [kk, tt(...v)]) },
@@ -740,7 +850,7 @@
       { f: 'workStart', label: tt('ساعات العمل من', 'Working hours from'), type: 'time', value: '06:00' }, { f: 'workEnd', label: tt('إلى', 'to'), type: 'time', value: '16:00' },
       { f: 'vh', label: tt('المركبات', 'Vehicles'), type: 'html', full: true, html: `<div class="check-grid">${vs.map(v => `<label class="check"><input type="checkbox" data-f="v_${v.id}"> ${M.esc(v.code)} <span class="muted small">${M.esc(U.vtypeName ? U.vtypeName(v.type) : v.type)}</span></label>`).join('')}</div>` },
       { f: 'terms', label: tt('شروط إضافية', 'Additional terms'), type: 'textarea', full: true, value: tt('المشغّل (الشركة) يتحمل الصيانة والوقود والزيوت. يسمح للمركبة بشغل إضافي خارج ساعات العقد، وكل شغل إضافي بيتسعّر لوحده وقته.', 'The operator (the company) bears maintenance, fuel and oils. The vehicle may do extra work outside the contract hours; each extra job is priced on its own at its time.') },
-    ], 'contract.create', { map: d => ({ clientId: d.clientId, name: d.name, channel: d.channel, externalSystem: d.externalSystem || '', pricing: d.pricing, rate: d.rate, cycle: d.cycle, startDate: d.startDate, endDate: d.endDate || undefined, withDriver: !!d.withDriver, exclusive: !!d.exclusive, kmAllowance: d.kmAllowance == null ? null : d.kmAllowance, kmBasis: d.kmBasis, extraKmRate: d.extraKmRate || 0, workStart: d.workStart, workEnd: d.workEnd, terms: d.terms || undefined, vehicles: Object.keys(d).filter(x => x.startsWith('v_') && d[x]).map(x => ({ vehicleId: x.slice(2) })) }),
+    ], 'contract.create', { map: d => ({ activity: d.activity || undefined, clientId: d.clientId, name: d.name, channel: d.channel, externalSystem: d.externalSystem || '', pricing: d.pricing, rate: d.rate, cycle: d.cycle, startDate: d.startDate, endDate: d.endDate || undefined, withDriver: !!d.withDriver, exclusive: !!d.exclusive, kmAllowance: d.kmAllowance == null ? null : d.kmAllowance, kmBasis: d.kmBasis, extraKmRate: d.extraKmRate || 0, workStart: d.workStart, workEnd: d.workEnd, terms: d.terms || undefined, vehicles: Object.keys(d).filter(x => x.startsWith('v_') && d[x]).map(x => ({ vehicleId: x.slice(2) })) }),
       after: r => { if (r && r.id) U.go('contract', r.id); }, ok: tt('تم إنشاء العقد', 'Contract created') });
   });
   U.act('k-trip', el => {
@@ -749,7 +859,7 @@
       { f: 'vehicleId', label: tt('المركبة', 'Vehicle'), type: 'select', req: true, options: kVehicles(k).map(x => [x.vehicleId, U.find('vehicles', x.vehicleId).code]) },
       { f: 'date', label: tt('التاريخ', 'Date'), type: 'date', value: M.TODAY, req: true },
       { f: 'startTime', label: tt('من', 'From'), type: 'time', value: k.workStart, req: true }, { f: 'endTime', label: tt('إلى', 'To'), type: 'time', req: true },
-      { f: 'km', label: tt('المسافة (كم)', 'Distance (km)'), type: 'number' }, { f: 'pax', label: tt('ركاب', 'Passengers'), type: 'number' },
+      { f: 'km', label: tt('المسافة (كم)', 'Distance (km)'), type: 'number' }, k.activity === 'cargo' ? null : { f: 'pax', label: M.L((M.prof(k.activity) || M.prof(M.acts()[0])).load.label), type: 'number' },
       { f: 'externalRef', label: tt('مرجع النظام (اختياري، يمنع التكرار)', 'System reference (optional, prevents duplicates)'), attrs: 'dir="ltr"' },
     ], 'contract.trip', { map: d => Object.assign({ contractId: k.id }, d, { km: d.km == null ? undefined : d.km, pax: d.pax == null ? undefined : d.pax }), ok: r => tt(`تم تسجيل الرحلة ${r.number}`, `Trip ${r.number} recorded`) });
   });
@@ -771,4 +881,119 @@
   });
   U.act('k-remv', el => U.confirm(tt('شيل المركبة من العقد', 'Take the vehicle off the contract'), tt('المركبة هتخرج من العقد من النهارده، والرحلات اللي اتأكدت قبل كده فاضلة.', 'The vehicle leaves the contract from today; trips confirmed before stay.'), () => U.run('contract.removeVehicle', { id: el.dataset.k, vehicleId: el.dataset.v }, { ok: tt('تم', 'Done') })));
   U.act('k-end', el => { const k = U.find('contracts', el.dataset.id); U.formModal(tt('إنهاء العقد', 'End the contract') + ' · ' + k.number, [{ f: 'endDate', label: tt('آخر يوم في العقد', 'Last day of the contract'), type: 'date', value: M.TODAY, req: true }], 'contract.end', { map: d => ({ id: k.id, endDate: d.endDate }), danger: true, ok: tt('تم إنهاء العقد', 'Contract ended'), intro: `<p class="muted small">${tt('المركبات بتتحرر من العقد بعد آخر يوم، ولسه تقدر تفوتر اللي فاضل.', 'The vehicles are released after the last day; you can still bill what is left.')}</p>` }); });
+
+  /* ================= LINES =================
+     Recurring runs of schools and universities, staff shifts and intercity departures. A line
+     creates the trips of the coming days on its vehicle and driver. Counts only: the students,
+     employees and passengers themselves are in the Sabeel module that serves them. */
+  const LINE_ACTS = ['education', 'staff', 'intercity'];
+  const lineActs = () => M.acts().filter(a => LINE_ACTS.includes(a));
+  const DAYS = [['الأحد', 'Sun'], ['الإثنين', 'Mon'], ['الثلاثاء', 'Tue'], ['الأربعاء', 'Wed'], ['الخميس', 'Thu'], ['الجمعة', 'Fri'], ['السبت', 'Sat']];
+  const lineDays = l => l.days.length === 7 ? tt('كل الأيام', 'Every day') : l.days.map(d => tt(...DAYS[d])).join('، ');
+  const legName = (l, leg) => { const p = M.prof(l.activity); return p && p.legNames ? M.L(p.legNames[leg]) : leg; };
+  const lineTimes = l => [l.goTime ? `${legName(l, 'go')} <span class="num">${l.goTime}</span>` : '', l.returnTime ? `${legName(l, 'return')} <span class="num">${l.returnTime}</span>` : ''].filter(Boolean).join(' · ');
+  /* seats on a line: its vehicle's, or its vehicle type's; intercity shows booked / available */
+  const lineSeats = l => { const v = l.vehicleId ? U.find('vehicles', l.vehicleId) : null; return (v && v.seats) || (M.vehicleClasses[l.vehicleType] || {}).seats || 0; };
+  const seatText = l => { const s = lineSeats(l); if (!s) return ''; const left = s - l.headcount; return l.activity === 'intercity' ? `${tt('محجوز', 'booked')} ${l.headcount} / ${s} · ${tt('متاح', 'available')} ${Math.max(0, left)}` : `${M.pct(l.headcount / s)} ${tt('إشغال', 'occupancy')}`; };
+  U.route('lines', () => {
+    const db = U.db(); const rows = db.lines || [];
+    const today = db.trips.filter(t => t.lineId && t.date === M.TODAY && t.status !== 'cancelled');
+    const unassigned = db.bookings.filter(b => b.lineId && b.unassigned && b.status !== 'cancelled' && b.date >= M.TODAY);
+    const head = M.sum(rows.filter(l => l.status === 'active'), l => l.headcount);
+    const one = lineActs().length === 1 ? M.prof(lineActs()[0]) : null;
+    return U.head(tt('الخطوط', 'Lines'), tt('الرحلات اليومية المتكررة: كل خط بمحطاته ومواعيده وأيامه، وبيولّد رحلات الأيام الجاية على مركبته وسواقه. MOTUS بيشوف العدد بس — الأسماء في موديول سبيل.', 'Daily recurring runs: each line with its stops, times and days creates the coming trips on its vehicle and driver. MOTUS sees counts only — the names are in the Sabeel module.'), U.btn(tt('خط جديد', 'New line'), 'line-new', '', 'plus')) +
+      U.kpis([U.kpi(tt('خطوط شغالة', 'Active lines'), rows.filter(l => l.status === 'active').length), U.kpi(tt('رحلات النهارده', "Today's runs"), today.length), U.kpi(one ? M.L(one.load.label) : tt('العدد', 'Headcount'), M.n0(head), tt('على الخطوط الشغالة', 'on active lines')), U.kpi(tt('رحلات بدون مركبة', 'Runs without a vehicle'), `<span class="${unassigned.length ? 'delta-down' : ''}">${unassigned.length}</span>`)]) +
+      U.card(null, U.table({ id: 'lines', rows, emptyTitle: tt('مفيش خطوط لسه', 'No lines yet'), emptyText: tt('اعمل خط لكل مدرسة أو وردية أو رحلة منتظمة.', 'Create a line for each school, shift or scheduled departure.'), columns: [
+        { label: tt('الخط', 'Line'), value: l => l.number, render: l => `<a class="cell-main" href="#line.${l.id}">${M.esc(M.L(l.name))}</a><div class="cell-sub">${l.number}${lineActs().length > 1 ? ' · ' + M.L(M.actName(l.activity)) : ''}</div>` },
+        { label: tt('العميل', 'Client'), value: l => M.L(U.find('clients', l.clientId).name) },
+        { label: tt('المسار', 'Route'), value: l => U.routeTxt(l.from, l.to), render: l => `${U.routeTxt(l.from, l.to)}${l.stops.length ? `<div class="cell-sub">${l.stops.length} ${tt('محطة', 'stops')}</div>` : ''}` },
+        { label: tt('المواعيد', 'Times'), value: l => l.goTime || l.returnTime, render: l => `${lineTimes(l)}<div class="cell-sub">${lineDays(l)}</div>` },
+        { label: tt('العدد', 'Count'), num: 1, value: l => l.headcount, render: l => `${l.headcount} ${M.L((M.prof(l.activity) || { load: { short: { ar: '', en: '' } } }).load.short)}${lineSeats(l) ? `<div class="cell-sub">${seatText(l)}</div>` : ''}` },
+        { label: tt('المركبة', 'Vehicle'), value: l => U.find('vehicles', l.vehicleId).code || '', render: l => l.vehicleId ? `${M.esc(U.find('vehicles', l.vehicleId).code)}<div class="cell-sub">${M.esc(M.L(U.find('drivers', l.driverId).name || ''))}</div>` : U.badge(tt('بدون مركبة', 'No vehicle'), 'warning') },
+        { label: tt('متولّد لحد', 'Runs up to'), value: l => l.generatedTo || '', render: l => l.generatedTo ? M.date(l.generatedTo) : '—' },
+        { label: tt('الحالة', 'Status'), value: l => l.status, render: l => l.status === 'active' ? U.badge(tt('شغال', 'Active'), 'success') : l.status === 'paused' ? U.badge(tt('موقوف', 'Paused'), 'warning') : U.badge(tt('منتهي', 'Ended'), 'muted') },
+      ], onRow: l => 'line.' + l.id }), { flush: true });
+  });
+  U.route('line', id => {
+    const db = U.db(); const l = (db.lines || []).find(x => x.id === id);
+    if (!l) return U.empty('route', tt('الخط غير موجود في هذه الشركة', 'Line not found in this company'));
+    const p = M.prof(l.activity) || M.prof(lineActs()[0]);
+    const trips = db.trips.filter(t => t.lineId === l.id && t.status !== 'cancelled').sort((a, b) => (a.date + a.startTime < b.date + b.startTime ? -1 : 1));
+    const waiting = db.bookings.filter(b => b.lineId === l.id && b.unassigned && b.status !== 'cancelled' && b.date >= M.TODAY);
+    const can = ['super_admin', 'company_admin', 'fleet_manager', 'operations'].includes(M.state.role);
+    const k = l.contractId ? U.find('contracts', l.contractId) : null;
+    const acts = can && l.status === 'active' ? `${U.btn(tt('ولّد رحلات الأيام الجاية', 'Create the coming runs'), 'line-gen', '', 'calendar', `data-id="${l.id}"`)} ${U.btn(tt('تعديل', 'Edit'), 'line-edit', 'secondary', 'settings', `data-id="${l.id}"`)} ${U.btn(tt('إيقاف', 'Pause'), 'line-status', 'ghost', '', `data-id="${l.id}" data-s="paused"`)}` : can && l.status === 'paused' ? U.btn(tt('تشغيل', 'Resume'), 'line-status', '', '', `data-id="${l.id}" data-s="active"`) : '';
+    return U.head(M.esc(M.L(l.name)), `${l.number} · ${M.L(M.actName(l.activity))} · ${lineTimes(l)}`, acts, [[tt('الخطوط', 'Lines'), 'lines'], [l.number]]) +
+      U.kpis([U.kpi(M.L(p.load.label), l.headcount, lineSeats(l) ? seatText(l) : ''), U.kpi(tt('رحلات متولّدة', 'Runs created'), trips.length, l.generatedTo ? tt('لحد ', 'up to ') + M.date(l.generatedTo) : ''), U.kpi(tt('بدون مركبة', 'Without a vehicle'), `<span class="${waiting.length ? 'delta-down' : ''}">${waiting.length}</span>`, waiting.length ? tt('المركبة أو السواق مشغولين — وزّعها من لوحة الحركة', 'Vehicle or driver busy — place them on the dispatch board') : ''), U.kpi(tt('سعر الرحلة', 'Price per run'), k ? (k.pricing === 'per_trip' ? M.money(k.rate) : tt('ضمن العقد', 'In the contract')) : M.money(l.pricePerRun))]) +
+      `<div class="cols-2">` + U.card(tt('الخط', 'Line'), U.dl([
+        [tt('العميل', 'Client'), U.cLabel(U.find('clients', l.clientId))],
+        [tt('المسار', 'Route'), `${U.routeTxt(l.from, l.to)}`],
+        [tt('المحطات', 'Stops'), l.stops.length ? l.stops.map(U.place).map(M.esc).join(' ← ') : '—'],
+        [tt('المواعيد', 'Times'), `${lineTimes(l)} · ${l.durationMin} ${tt('دقيقة', 'min')}`],
+        [tt('الأيام', 'Days'), lineDays(l)],
+        [tt('المدة', 'Period'), `${M.date(l.startDate)} → ${l.endDate ? M.date(l.endDate) : tt('مفتوح', 'open-ended')}`],
+        [tt('المركبة والسائق', 'Vehicle & driver'), l.vehicleId ? `<a href="#vehicle.${l.vehicleId}">${M.esc(U.find('vehicles', l.vehicleId).code)}</a> · ${M.esc(M.L(U.find('drivers', l.driverId).name || ''))}` : '—'],
+        [tt('العقد', 'Contract'), k ? `<a href="#contract.${k.id}">${k.number}</a>` : '—'],
+        [tt('ملاحظات', 'Notes'), M.esc(l.notes || '—')],
+      ])) +
+      U.card(tt('بيانات الأفراد', 'People'), `<p class="muted">${tt('أسماء وعناوين الطلاب أو الموظفين أو الركاب مش في MOTUS: بتتسجل في موديول سبيل اللي بيخدمهم (Sabeel Bus Schools / University / Dawra / Swa Bus)، وMOTUS بيستقبل العدد بس.', 'Names and addresses of students, employees or passengers are not in MOTUS: they are kept in the Sabeel module that serves them (Sabeel Bus Schools / University / Dawra / Swa Bus); MOTUS receives the count only.')}</p>`) + `</div><div style="height:16px"></div>` +
+      U.card(tt('الرحلات', 'Runs'), U.table({ id: 'line-trips', rows: trips.concat(waiting.map(b => ({ _b: b, date: b.date, startTime: b.time, status: 'unassigned' }))).sort((a, b) => (a.date + a.startTime < b.date + b.startTime ? -1 : 1)), pageSize: 10, export: false, columns: [
+        { label: tt('الرحلة', 'Run'), value: t => t.number || t._b.number, render: t => t._b ? `<a href="#booking.${t._b.id}">${t._b.number}</a>` : `<a href="#trip.${t.id}">${t.number}</a>` },
+        { label: tt('التاريخ', 'Date'), value: t => t.date + t.startTime, render: t => `${M.date(t.date)} <span class="num muted">${t.startTime}</span>` },
+        { label: tt('الاتجاه', 'Direction'), value: t => t.lineLeg || (t._b ? '' : ''), render: t => t._b ? M.L(M.typeName(t._b.tripType)) : M.L(M.typeName(t.type)) },
+        { label: tt('المركبة', 'Vehicle'), value: t => t._b ? '' : U.find('vehicles', t.vehicleId).code, render: t => t._b ? U.badge(tt('بدون مركبة', 'No vehicle'), 'danger') : M.esc(U.find('vehicles', t.vehicleId).code) },
+        { label: tt('الحالة', 'Status'), value: t => t.status, render: t => t._b ? `<button class="btn sm" data-act="convert-booking" data-id="${t._b.id}">${tt('تخصيص', 'Assign')}</button>` : U.status(t.status) },
+      ] }));
+  });
+  const lineFields = (l, act) => {
+    const db = U.db(); l = l || {}; act = l.activity || act;
+    const p = M.prof(act); const pts = M.placesFor(act);
+    return [
+      !l.id && lineActs().length > 1 ? { f: 'activity', label: tt('النشاط', 'Activity'), type: 'select', value: act, options: lineActs().map(a => [a, M.L(M.actName(a))]) } : null,
+      { f: 'name', label: tt('اسم الخط', 'Line name'), value: l.name ? M.L(l.name) : '', req: true, attrs: `placeholder="${act === 'education' ? tt('مثلاً: خط المعادي — مدرسة النور', 'e.g. Maadi line — Al Noor school') : act === 'staff' ? tt('مثلاً: وردية الصبح — مصنع العاشر', 'e.g. Morning shift — 10th factory') : tt('مثلاً: القاهرة ← الإسكندرية 8 الصبح', 'e.g. Cairo → Alexandria 8am')}"` },
+      { f: 'clientId', label: tt('العميل', 'Client'), type: 'select', value: l.clientId, req: true, options: db.clients.filter(c => c.status === 'active' && M.clientTypesFor(act).includes(c.type)).concat(l.clientId ? [U.find('clients', l.clientId)] : []).filter((c, i, a) => c && c.id && a.findIndex(x => x.id === c.id) === i).map(c => [c.id, M.L(c.name)]) },
+      { f: 'from', label: act === 'education' ? tt('أول محطة', 'First stop') : tt('من', 'From'), type: 'select', value: l.from, options: pts.map(k => [k, U.place(k)]), req: true },
+      { f: 'to', label: act === 'education' ? tt('المدرسة / الجامعة', 'School / university') : act === 'staff' ? tt('مقر العمل', 'Workplace') : tt('إلى', 'To'), type: 'select', value: l.to, options: pts.map(k => [k, U.place(k)]), req: true },
+      { f: 'stopsHtml', label: tt('محطات في النص (اختياري)', 'Stops in between (optional)'), type: 'html', full: true, html: `<div class="check-grid">${pts.map(k => `<label class="check"><input type="checkbox" data-f="stop_${k}" ${(l.stops || []).includes(k) ? 'checked' : ''}> ${M.esc(U.place(k))}</label>`).join('')}</div>` },
+      { f: 'goTime', label: M.L(p.legNames.go) + ' — ' + tt('الميعاد', 'time'), type: 'time', value: l.goTime || (act === 'staff' ? '07:00' : '06:30') },
+      { f: 'returnTime', label: M.L(p.legNames.return) + ' — ' + tt('الميعاد (فاضي = مفيش)', 'time (empty = none)'), type: 'time', value: l.id ? (l.returnTime || '') : (act === 'staff' ? '16:00' : act === 'education' ? '14:30' : '') },
+      { f: 'durationMin', label: tt('مدة الرحلة (دقيقة)', 'Run duration (min)'), type: 'number', value: l.durationMin || 60, attrs: 'min="5"' },
+      { f: 'daysHtml', label: tt('الأيام', 'Days'), type: 'html', full: true, html: `<div class="check-row">${DAYS.map((d, i) => `<label class="check"><input type="checkbox" data-f="day_${i}" ${(l.days || [0, 1, 2, 3, 4]).includes(i) ? 'checked' : ''}> ${tt(d[0], d[1])}</label>`).join('')}</div>` },
+      { f: 'startDate', label: act === 'education' ? tt('بداية الفصل الدراسي', 'Term start') : tt('من تاريخ', 'From'), type: 'date', value: l.startDate || M.TODAY, req: true },
+      { f: 'endDate', label: act === 'education' ? tt('نهاية الفصل الدراسي', 'Term end') : tt('إلى تاريخ (اختياري)', 'To (optional)'), type: 'date', value: l.endDate || '' },
+      { f: 'headcount', label: M.L(p.load.label), type: 'number', value: l.headcount || '', req: true, attrs: 'min="1"' },
+      { f: 'vehicleType', label: tt('نوع المركبة', 'Vehicle type'), type: 'select', value: l.vehicleType, options: M.typesFor(act).map(k => [k, U.vtype(k)]), req: true },
+      { f: 'vehicleId', label: tt('المركبة', 'Vehicle'), type: 'select', value: l.vehicleId || '', options: [['', tt('— لسه —', '— not yet —')]].concat(db.vehicles.filter(v => v.status !== 'sold' && v.seats > 0).map(v => [v.id, `${v.code} · ${v.seats} ${tt('مقعد', 'seats')}`])) },
+      { f: 'driverId', label: tt('السائق', 'Driver'), type: 'select', value: l.driverId || '', options: [['', tt('سائق المركبة', "The vehicle's driver")]].concat(db.drivers.filter(d => d.status === 'active').map(d => [d.id, M.L(d.name)])) },
+      { f: 'contractId', label: tt('عقد التشغيل (اختياري)', 'Operating contract (optional)'), type: 'select', value: l.contractId || '', options: [['', '—']].concat(db.contracts.filter(k => k.status === 'active' && (!k.activity || k.activity === act)).map(k => [k.id, `${k.number} · ${M.L(k.name)}`])) },
+      { f: 'pricePerRun', label: tt('سعر الرحلة (لو مفيش عقد)', 'Price per run (without a contract)'), type: 'number', value: l.pricePerRun || 0, attrs: 'min="0"' },
+      { f: 'notes', label: tt('ملاحظات', 'Notes'), type: 'textarea', value: l.notes || '', full: true },
+    ];
+  };
+  const linePayload = (d, act) => {
+    const out = { name: d.name, clientId: d.clientId, from: d.from, to: d.to, goTime: d.goTime || null, returnTime: d.returnTime || null, durationMin: d.durationMin, startDate: d.startDate, endDate: d.endDate || null, headcount: d.headcount, vehicleType: d.vehicleType, vehicleId: d.vehicleId || null, driverId: d.driverId || null, contractId: d.contractId || null, pricePerRun: d.pricePerRun || 0, notes: d.notes || '' };
+    out.stops = Object.keys(d).filter(k => k.startsWith('stop_') && d[k]).map(k => k.slice(5)).filter(k => k !== d.from && k !== d.to);
+    out.days = Object.keys(d).filter(k => k.startsWith('day_') && d[k]).map(k => +k.slice(4));
+    if (act) out.activity = act;
+    return out;
+  };
+  U.act('line-new', el => {
+    const act = (el && el.dataset && el.dataset.a) || lineActs()[0];
+    if (!act) { U.toast(tt('الخطوط للمدارس والجامعات والموظفين وبين المدن', 'Lines are for education, staff and intercity'), 'error'); return; }
+    U.formModal(tt('خط جديد', 'New line') + (lineActs().length > 1 ? ' · ' + M.L(M.actName(act)) : ''), lineFields(null, act), 'line.create', {
+      intro: `<p class="muted small">${tt('الخط بيولّد رحلات الأيام الجاية لوحده على مركبته وسواقه، ويتأكد إنهم فاضيين. العدد بس — من غير أسماء.', 'The line creates the coming runs on its vehicle and driver and checks they are free. Counts only — no names.')}</p>`,
+      map: d => linePayload(d, act), after: r => { if (r && r.id) U.go('line', r.id); }, ok: tt('تم إنشاء الخط', 'Line created'),
+      mount: () => { const s = document.querySelector('#mf [data-f="activity"]'); if (s) s.addEventListener('change', () => { U.closeOverlays(); U.acts['line-new']({ dataset: { a: s.value } }); }); } });
+  });
+  U.act('line-edit', el => { const l = U.find('lines', el.dataset.id); U.formModal(tt('تعديل الخط', 'Edit line') + ' · ' + l.number, lineFields(l), 'line.update', { map: d => Object.assign(linePayload(d), { id: l.id }), ok: tt('تم الحفظ', 'Saved') }); });
+  U.act('line-status', el => U.run('line.update', { id: el.dataset.id, status: el.dataset.s }, { ok: tt('تم', 'Done') }));
+  U.act('line-gen', el => {
+    const l = U.find('lines', el.dataset.id);
+    const from = l.generatedTo && l.generatedTo >= M.TODAY ? M.addDays(l.generatedTo, 1) : M.TODAY;
+    U.formModal(tt('توليد الرحلات', 'Create runs') + ' · ' + l.number, [
+      { f: 'from', label: tt('من', 'From'), type: 'date', value: from, req: true }, { f: 'to', label: tt('إلى', 'To'), type: 'date', value: M.addDays(from, 6), req: true },
+    ], 'line.generate', { intro: `<p class="muted small">${tt('بيعمل رحلة لكل يوم شغل وكل اتجاه. لو المركبة أو السواق مشغولين في ميعاد، الرحلة دي بتفضل "بدون مركبة" بالسبب وتتوزع من لوحة الحركة.', 'One run per working day and direction. If the vehicle or driver is busy at a time, that run stays "without a vehicle" with the reason, to be placed from the dispatch board.')}</p>`,
+      map: d => ({ id: l.id, from: d.from, to: d.to }), submit: tt('ولّد', 'Create'),
+      ok: r => tt(`اتعمل ${r.created} رحلة (${r.assigned} متخصصة${r.unassigned.length ? '، ' + r.unassigned.length + ' بدون مركبة' : ''})`, `${r.created} runs created (${r.assigned} assigned${r.unassigned.length ? ', ' + r.unassigned.length + ' without a vehicle' : ''})`) });
+  });
 })();

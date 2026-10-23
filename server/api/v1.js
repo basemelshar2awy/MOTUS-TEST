@@ -18,7 +18,7 @@ const RES = {
   vehicles: { table: 'vehicles', scope: 'vehicles', create: 'vehicle.create', update: 'vehicle.update' },
   drivers: { table: 'drivers', scope: 'drivers', create: 'driver.create', update: 'driver.update', hide: ['national_id'] },
   clients: { table: 'clients', scope: 'clients', create: 'client.create', update: 'client.update' },
-  bookings: { table: 'bookings', scope: 'bookings', create: 'booking.create', update: 'booking.update', actions: { cancel: 'booking.cancel', assign: 'booking.assign' } },
+  bookings: { table: 'bookings', scope: 'bookings', create: 'booking.create', update: 'booking.update', actions: { cancel: 'booking.cancel', assign: 'booking.assign', newcode: 'shipment.newCode' }, hide: ['otp_hash'] },
   trips: { table: 'trips', scope: 'trips', actions: { start: 'trip.start', complete: 'trip.complete', cancel: 'trip.cancel' } },
   programs: { table: 'programs', scope: 'programs', create: 'program.create', actions: { schedule: 'program.schedule', cancel: 'program.cancel' } },
   invoices: { table: 'invoices', scope: 'invoices', create: 'invoice.manual', actions: { cancel: 'invoice.cancel' } },
@@ -28,6 +28,8 @@ const RES = {
   suppliers: { table: 'suppliers', scope: 'suppliers', create: 'supplier.create', update: 'supplier.update' },
   workorders: { table: 'work_orders', scope: 'workorders', create: 'wo.create', update: 'wo.update', actions: { close: 'wo.close', cancel: 'wo.cancel' } },
   fuel: { table: 'fuel_records', scope: 'fuel', create: 'fuel.create' },
+  // lines (education, staff, intercity): POST /lines/{id}/generate creates the coming runs
+  lines: { table: 'lines', scope: 'lines', create: 'line.create', update: 'line.update', actions: { generate: 'line.generate' } },
   // operating contracts: POST /contracts/{id}/trips confirms a finished trip (idempotent by externalRef)
   contracts: { table: 'contracts', scope: 'contracts', create: 'contract.create', update: 'contract.update', actions: { trips: 'contract.trip', end: 'contract.end', bill: 'contract.bill' } },
   stock: { table: 'stock_movements', scope: 'stock', post: { receipts: 'stock.receipt', adjustments: 'stock.adjust', transfers: 'stock.transfer' } },
