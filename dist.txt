@@ -1,0 +1,5 @@
+total 103576
+drwxr-xr-x  2 runner runner     4096 Oct 23 23:07 .
+drwxr-xr-x 13 runner runner     4096 Oct 23 23:07 ..
+-rw-r--r--  1 runner runner 53023257 Oct 23 23:07 MOTUS-driver-android.apk
+-rw-r--r--  1 runner runner 53023265 Oct 23 23:07 MOTUS-driver-huawei.apk

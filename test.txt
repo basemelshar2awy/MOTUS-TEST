@@ -1,0 +1,10 @@
+
+::group::✅ Passing tests
+✅ the big button is for the running trip first
+✅ otherwise the earliest trip not started, even one left from yesterday
+✅ a trip next week is shown under later and is the next one when nothing is nearer
+✅ the delivery code is asked only for a cargo shipment still waiting for it
+✅ numbers typed with Arabic digits or commas
+::endgroup::
+
+🎉 5 tests passed.
