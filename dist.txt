@@ -1,0 +1,5 @@
+total 115712
+drwxr-xr-x  2 runner runner     4096 Oct 23 23:08 .
+drwxr-xr-x 13 runner runner     4096 Oct 23 23:08 ..
+-rw-r--r--  1 runner runner 59239141 Oct 23 23:08 MOTUS-admin-android.apk
+-rw-r--r--  1 runner runner 59239145 Oct 23 23:08 MOTUS-admin-huawei.apk
